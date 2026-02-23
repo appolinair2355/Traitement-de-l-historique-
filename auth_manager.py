@@ -4,6 +4,15 @@ from telethon import TelegramClient
 from telethon.errors import SessionPasswordNeededError
 from config import API_ID, API_HASH, SESSION_PATH, AUTH_STATE_FILE, USER_PHONE
 
+def _fix_session_permissions():
+    for ext in ('.session', '.session-journal'):
+        path = SESSION_PATH + ext
+        if os.path.exists(path):
+            try:
+                os.chmod(path, 0o664)
+            except Exception:
+                pass
+
 class AuthManager:
     def __init__(self):
         self.client = None
@@ -34,9 +43,14 @@ class AuthManager:
             self.client = None
 
         # Supprimer la session existante pour forcer une nouvelle auth
-        session_file = SESSION_PATH + ".session"
-        if os.path.exists(session_file):
-            os.remove(session_file)
+        for ext in ('.session', '.session-journal'):
+            path = SESSION_PATH + ext
+            if os.path.exists(path):
+                try:
+                    os.remove(path)
+                except Exception:
+                    # Si on ne peut pas supprimer, corriger les permissions
+                    _fix_session_permissions()
 
         self.client = TelegramClient(SESSION_PATH, API_ID, API_HASH)
         await self.client.connect()

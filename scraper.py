@@ -1,8 +1,19 @@
 import re
+import os
 from telethon import TelegramClient
 from telethon.tl.types import Channel, PeerChannel
 from config import API_ID, API_HASH, SESSION_PATH, CHANNEL_USERNAME, CHANNEL_ID
 from storage import add_prediction, get_last_sync, update_last_sync
+
+def _fix_session_permissions():
+    """S'assure que le fichier session SQLite est accessible en lecture/écriture."""
+    for ext in ('.session', '.session-journal'):
+        path = SESSION_PATH + ext
+        if os.path.exists(path):
+            try:
+                os.chmod(path, 0o664)
+            except Exception:
+                pass
 
 PATTERN = re.compile(
     r'PRÉDICTION\s*#(\d+).*?'
@@ -51,6 +62,7 @@ class Scraper:
 
     async def sync(self, full=False, progress_callback=None):
         """Synchronise le canal VIP DE KOUAMÉ & JOKER"""
+        _fix_session_permissions()
         await self.client.connect()
 
         if not await self.client.is_user_authorized():
@@ -96,6 +108,7 @@ class Scraper:
 
     async def search_in_channel(self, keywords, limit=5000, progress_callback=None):
         """Recherche des messages contenant les mots-clés dans le canal"""
+        _fix_session_permissions()
         await self.client.connect()
 
         if not await self.client.is_user_authorized():
