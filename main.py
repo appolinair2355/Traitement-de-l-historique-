@@ -2,7 +2,11 @@ import asyncio
 import logging
 from aiohttp import web
 from datetime import datetime
-from config import PORT
+from config import PORT, ensure_data_dir
+
+# Créer le dossier data avant tout (critique sur Render)
+ensure_data_dir()
+
 from bot_handler import setup_bot
 
 logging.basicConfig(level=logging.INFO)

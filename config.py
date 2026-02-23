@@ -19,9 +19,9 @@ USER_PHONE = "+22995501564"
 # Port
 PORT = int(os.getenv('PORT', 5000))
 
-# Dossier de données local (toujours inscriptible dans Replit)
+# Dossier de données : /data si défini (disque persistant Render), sinon ./data/ local
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(_BASE_DIR, 'data')
+DATA_DIR = os.getenv('DATA_DIR', os.path.join(_BASE_DIR, 'data'))
 
 PREDICTIONS_FILE = os.path.join(DATA_DIR, 'predictions.json')
 LAST_SYNC_FILE = os.path.join(DATA_DIR, 'last_sync.json')

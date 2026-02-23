@@ -15,5 +15,6 @@ services:
     envVars:
       - key: PORT
         value: 10000
-      # Les autres variables sont dans config.py !
+      - key: DATA_DIR
+        value: /data
       
