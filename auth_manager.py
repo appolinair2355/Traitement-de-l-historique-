@@ -1,17 +1,21 @@
 import json
 import os
 from telethon import TelegramClient
+from telethon.sessions import StringSession
 from telethon.errors import SessionPasswordNeededError
-from config import API_ID, API_HASH, SESSION_PATH, AUTH_STATE_FILE, USER_PHONE
+from config import API_ID, API_HASH, SESSION_PATH, AUTH_STATE_FILE, USER_PHONE, DATA_DIR, TELETHON_SESSION_STRING
 
-def _fix_session_permissions():
-    for ext in ('.session', '.session-journal'):
-        path = SESSION_PATH + ext
-        if os.path.exists(path):
-            try:
-                os.chmod(path, 0o664)
-            except Exception:
-                pass
+
+def _save_session_string(session_str: str):
+    """Sauvegarde la nouvelle StringSession dans DATA_DIR pour les prochaines connexions."""
+    path = os.path.join(DATA_DIR, 'session_string.txt')
+    try:
+        with open(path, 'w') as f:
+            f.write(session_str)
+        os.chmod(path, 0o664)
+    except Exception as e:
+        pass
+
 
 class AuthManager:
     def __init__(self):
@@ -30,11 +34,11 @@ class AuthManager:
             json.dump(self.state, f)
 
     def is_connected(self):
-        return os.path.exists(SESSION_PATH + ".session")
+        # Vérifie via StringSession (pas de fichier requis)
+        return self.state.get('step') == 'connected' or os.path.exists(SESSION_PATH + ".session")
 
     async def send_code(self):
-        """Envoie le code SMS. Supprime toute session existante et garde le client ouvert."""
-        # Déconnecter le client précédent proprement
+        """Envoie le code SMS avec une StringSession vide."""
         if self.client:
             try:
                 await self.client.disconnect()
@@ -42,17 +46,8 @@ class AuthManager:
                 pass
             self.client = None
 
-        # Supprimer la session existante pour forcer une nouvelle auth
-        for ext in ('.session', '.session-journal'):
-            path = SESSION_PATH + ext
-            if os.path.exists(path):
-                try:
-                    os.remove(path)
-                except Exception:
-                    # Si on ne peut pas supprimer, corriger les permissions
-                    _fix_session_permissions()
-
-        self.client = TelegramClient(SESSION_PATH, API_ID, API_HASH)
+        # Nouvelle session vide pour l'authentification
+        self.client = TelegramClient(StringSession(), API_ID, API_HASH)
         await self.client.connect()
 
         try:
@@ -64,7 +59,6 @@ class AuthManager:
             }
             self._save_state()
 
-            # NE PAS déconnecter ici — le client doit rester ouvert pour verify_code
             return True, (
                 f"📲 Code envoyé à `{USER_PHONE}`\n\n"
                 f"Tapez: `/code aa` suivi du code reçu\n"
@@ -78,7 +72,7 @@ class AuthManager:
             return False, f"❌ Erreur envoi code: {str(e)}"
 
     async def verify_code(self, code: str):
-        """Vérifie le code reçu par SMS."""
+        """Vérifie le code reçu par SMS et sauvegarde la nouvelle session."""
         if self.state.get('step') != 'waiting_code':
             return False, "❌ Pas de code en attente. Tapez /connect d'abord."
 
@@ -86,11 +80,9 @@ class AuthManager:
         if not phone_code_hash:
             return False, "❌ Session invalide. Retapez /connect."
 
-        # Enlever le préfixe "aa" si présent
         real_code = code[2:] if code.startswith('aa') else code
         real_code = real_code.strip()
 
-        # Si le client est perdu (redémarrage du bot), impossible de valider — il faut recommencer
         if self.client is None or not self.client.is_connected():
             self.state = {'step': 'idle'}
             self._save_state()
@@ -105,6 +97,11 @@ class AuthManager:
                 code=real_code,
                 phone_code_hash=phone_code_hash
             )
+
+            # Sauvegarder la nouvelle StringSession
+            new_session_str = self.client.session.save()
+            if new_session_str:
+                _save_session_string(new_session_str)
 
             self.state = {'step': 'connected'}
             self._save_state()
@@ -131,7 +128,7 @@ class AuthManager:
             return False, f"❌ Erreur: {err}"
 
     async def reset(self):
-        """Déconnexion et suppression de la session."""
+        """Déconnexion et nettoyage."""
         try:
             if self.client and self.client.is_connected():
                 await self.client.disconnect()
@@ -140,9 +137,16 @@ class AuthManager:
         self.client = None
         self.state = {'step': 'idle'}
         self._save_state()
-        session_file = SESSION_PATH + ".session"
-        if os.path.exists(session_file):
-            os.remove(session_file)
+        # Supprimer la session sauvegardée
+        for path in [
+            SESSION_PATH + ".session",
+            os.path.join(DATA_DIR, 'session_string.txt')
+        ]:
+            if os.path.exists(path):
+                try:
+                    os.remove(path)
+                except Exception:
+                    pass
 
 
 auth_manager = AuthManager()

@@ -1,19 +1,10 @@
 import re
 import os
 from telethon import TelegramClient
+from telethon.sessions import StringSession
 from telethon.tl.types import Channel, PeerChannel
-from config import API_ID, API_HASH, SESSION_PATH, CHANNEL_USERNAME, CHANNEL_ID
+from config import API_ID, API_HASH, SESSION_PATH, CHANNEL_USERNAME, CHANNEL_ID, TELETHON_SESSION_STRING
 from storage import add_prediction, get_last_sync, update_last_sync
-
-def _fix_session_permissions():
-    """S'assure que le fichier session SQLite est accessible en lecture/écriture."""
-    for ext in ('.session', '.session-journal'):
-        path = SESSION_PATH + ext
-        if os.path.exists(path):
-            try:
-                os.chmod(path, 0o664)
-            except Exception:
-                pass
 
 PATTERN = re.compile(
     r'PRÉDICTION\s*#(\d+).*?'
@@ -22,9 +13,31 @@ PATTERN = re.compile(
     re.IGNORECASE | re.DOTALL
 )
 
+def _load_session_string():
+    """Charge la StringSession depuis le fichier (si re-auth récente) ou la config."""
+    session_file = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                'data', 'session_string.txt')
+    # Aussi chercher dans DATA_DIR
+    from config import DATA_DIR
+    data_session_file = os.path.join(DATA_DIR, 'session_string.txt')
+    for path in [data_session_file, session_file]:
+        if os.path.exists(path):
+            try:
+                with open(path, 'r') as f:
+                    s = f.read().strip()
+                    if s:
+                        return s
+            except Exception:
+                pass
+    return TELETHON_SESSION_STRING
+
+
 class Scraper:
     def __init__(self):
-        self.client = TelegramClient(SESSION_PATH, API_ID, API_HASH)
+        self._make_client()
+
+    def _make_client(self):
+        self.client = TelegramClient(StringSession(_load_session_string()), API_ID, API_HASH)
 
     async def _get_channel(self):
         """Trouve le canal par ID numérique, puis par nom si besoin."""
@@ -62,7 +75,7 @@ class Scraper:
 
     async def sync(self, full=False, progress_callback=None):
         """Synchronise le canal VIP DE KOUAMÉ & JOKER"""
-        _fix_session_permissions()
+        self._make_client()
         await self.client.connect()
 
         if not await self.client.is_user_authorized():
@@ -108,7 +121,7 @@ class Scraper:
 
     async def search_in_channel(self, keywords, limit=5000, progress_callback=None):
         """Recherche des messages contenant les mots-clés dans le canal"""
-        _fix_session_permissions()
+        self._make_client()
         await self.client.connect()
 
         if not await self.client.is_user_authorized():
