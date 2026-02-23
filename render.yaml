@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: vip-kouame-predictions
+    runtime: python
+    plan: free
+    
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    
+    disk:
+      name: data
+      mountPath: /data
+      sizeGB: 1
+    
+    envVars:
+      - key: PORT
+        value: 10000
+      # Les autres variables sont dans config.py !
+      
