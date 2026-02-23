@@ -111,7 +111,7 @@ def generate_search_pdf(results, keywords):
     return filename
 
 
-def generate_channel_search_pdf(messages, keywords):
+def generate_channel_search_pdf(messages, keywords, channel_title=''):
     """Génère un PDF avec les messages bruts trouvés directement dans le canal"""
     filename = f"/tmp/canal_recherche_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
     doc = SimpleDocTemplate(filename, pagesize=A4)
@@ -133,7 +133,8 @@ def generate_channel_search_pdf(messages, keywords):
         fontSize=9, leading=12
     )
 
-    elements.append(Paragraph("RECHERCHE DANS LE CANAL TELEGRAM", title_style))
+    header_title = f"RECHERCHE — {channel_title}" if channel_title else "RECHERCHE DANS LE CANAL TELEGRAM"
+    elements.append(Paragraph(header_title, title_style))
     elements.append(Spacer(1, 6))
     elements.append(Paragraph(f"Mots-clés: {', '.join(keywords)}", subtitle_style))
     elements.append(Paragraph(f"Résultats trouvés: {len(messages)}", subtitle_style))

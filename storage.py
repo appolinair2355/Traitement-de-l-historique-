@@ -1,10 +1,17 @@
 import json
 import os
 from datetime import datetime
-from config import PREDICTIONS_FILE, LAST_SYNC_FILE, ensure_data_dir
+from config import PREDICTIONS_FILE, LAST_SYNC_FILE, CHANNELS_FILE, GAMES_FILE, ADMINS_FILE, ADMIN_ID, ensure_data_dir
 
-# Créer le dossier au chargement
 ensure_data_dir()
+
+# Toutes les commandes qui peuvent être accordées à un sous-admin
+ALL_COMMANDS = [
+    'sync', 'fullsync', 'search', 'hsearch', 'report', 'filter', 'stats', 'clear',
+    'addchannel', 'removechannel', 'channels', 'usechannel',
+    'gload', 'gstats', 'gclear', 'ganalyze',
+    'gvictoire', 'gparite', 'gstructure', 'gplusmoins', 'gcostume', 'gecartmax',
+]
 
 def load_json(filepath, default=None):
     if not os.path.exists(filepath):
@@ -86,4 +93,130 @@ def search_predictions(keywords):
 def clear_all():
     save_json(PREDICTIONS_FILE, [])
     save_json(LAST_SYNC_FILE, {'last_message_id': 0})
-    
+
+# ── Gestion des canaux de recherche ──────────────────────────────────────────
+
+def get_channels():
+    return load_json(CHANNELS_FILE, [])
+
+def add_channel(channel_id: str, name: str = '') -> bool:
+    channels = get_channels()
+    if any(ch['id'] == str(channel_id) for ch in channels):
+        return False
+    channels.append({'id': str(channel_id), 'name': name, 'active': len(channels) == 0})
+    save_json(CHANNELS_FILE, channels)
+    return True
+
+def remove_channel(channel_id: str):
+    channels = [ch for ch in get_channels() if ch['id'] != str(channel_id)]
+    save_json(CHANNELS_FILE, channels)
+
+def get_active_channel():
+    channels = get_channels()
+    for ch in channels:
+        if ch.get('active'):
+            return ch
+    return channels[0] if channels else None
+
+def set_active_channel(channel_id: str):
+    channels = get_channels()
+    for ch in channels:
+        ch['active'] = (ch['id'] == str(channel_id))
+    save_json(CHANNELS_FILE, channels)
+
+# ── Jeux analysés ─────────────────────────────────────────────────────────────
+
+def get_analyzed_games():
+    return load_json(GAMES_FILE, [])
+
+def save_analyzed_games(games: list):
+    save_json(GAMES_FILE, games)
+
+def clear_analyzed_games():
+    save_json(GAMES_FILE, [])
+
+# ── Administrateurs dynamiques avec permissions ────────────────────────────────
+
+def _load_admins_raw() -> dict:
+    """Charge le fichier admins et migre l'ancien format liste → dict si nécessaire."""
+    raw = load_json(ADMINS_FILE, {})
+    if isinstance(raw, list):
+        # Migration : ancien format [id1, id2] → nouveau {id1: ALL_COMMANDS}
+        migrated = {}
+        for uid in raw:
+            migrated[str(uid)] = list(ALL_COMMANDS)
+        save_json(ADMINS_FILE, migrated)
+        return migrated
+    return raw
+
+def _save_admins_raw(data: dict):
+    save_json(ADMINS_FILE, data)
+
+def get_admins() -> list:
+    """Retourne la liste des IDs admin (toujours inclus : ADMIN_ID principal)."""
+    raw = _load_admins_raw()
+    ids = [int(k) for k in raw.keys()]
+    if ADMIN_ID not in ids:
+        ids.insert(0, ADMIN_ID)
+    return ids
+
+def get_admins_with_permissions() -> dict:
+    """Retourne le dict complet {user_id: [commands]}."""
+    raw = _load_admins_raw()
+    result = {}
+    # Main admin toujours présent avec toutes les permissions
+    result[ADMIN_ID] = list(ALL_COMMANDS)
+    for k, v in raw.items():
+        uid = int(k)
+        if uid != ADMIN_ID:
+            result[uid] = v if isinstance(v, list) else list(ALL_COMMANDS)
+    return result
+
+def get_admin_permissions(user_id: int) -> list:
+    """Retourne les commandes autorisées pour un admin donné."""
+    if user_id == ADMIN_ID:
+        return list(ALL_COMMANDS)
+    raw = _load_admins_raw()
+    entry = raw.get(str(user_id))
+    if entry is None:
+        return []
+    return entry if isinstance(entry, list) else list(ALL_COMMANDS)
+
+def has_permission(user_id: int, command: str) -> bool:
+    """Vérifie si un admin peut utiliser une commande."""
+    if user_id == ADMIN_ID:
+        return True
+    perms = get_admin_permissions(user_id)
+    return command in perms
+
+def add_admin(user_id: int, commands: list = None) -> bool:
+    """Ajoute un admin avec sa liste de commandes autorisées."""
+    if user_id == ADMIN_ID:
+        return False
+    raw = _load_admins_raw()
+    if str(user_id) in raw:
+        return False
+    raw[str(user_id)] = commands if commands is not None else list(ALL_COMMANDS)
+    _save_admins_raw(raw)
+    return True
+
+def update_admin_permissions(user_id: int, commands: list) -> bool:
+    """Met à jour les permissions d'un admin existant."""
+    if user_id == ADMIN_ID:
+        return False
+    raw = _load_admins_raw()
+    if str(user_id) not in raw:
+        return False
+    raw[str(user_id)] = commands
+    _save_admins_raw(raw)
+    return True
+
+def remove_admin(user_id: int) -> bool:
+    if user_id == ADMIN_ID:
+        return False
+    raw = _load_admins_raw()
+    if str(user_id) not in raw:
+        return False
+    del raw[str(user_id)]
+    _save_admins_raw(raw)
+    return True

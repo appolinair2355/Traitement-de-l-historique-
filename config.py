@@ -32,6 +32,9 @@ PREDICTIONS_FILE = os.path.join(DATA_DIR, 'predictions.json')
 LAST_SYNC_FILE = os.path.join(DATA_DIR, 'last_sync.json')
 SESSION_PATH = os.path.join(DATA_DIR, 'telethon_session')
 AUTH_STATE_FILE = os.path.join(DATA_DIR, 'auth_state.json')
+CHANNELS_FILE = os.path.join(DATA_DIR, 'channels.json')
+GAMES_FILE = os.path.join(DATA_DIR, 'analyzed_games.json')
+ADMINS_FILE = os.path.join(DATA_DIR, 'admins.json')
 
 def ensure_data_dir():
     os.makedirs(DATA_DIR, exist_ok=True)
