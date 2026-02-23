@@ -1,0 +1,26 @@
+{
+  "5622847726": [
+    "sync",
+    "fullsync",
+    "search",
+    "hsearch",
+    "report",
+    "filter",
+    "stats",
+    "clear",
+    "addchannel",
+    "removechannel",
+    "channels",
+    "usechannel",
+    "gload",
+    "gstats",
+    "gclear",
+    "ganalyze",
+    "gvictoire",
+    "gparite",
+    "gstructure",
+    "gplusmoins",
+    "gcostume",
+    "gecartmax"
+  ]
+}
