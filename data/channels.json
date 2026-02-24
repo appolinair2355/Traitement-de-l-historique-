@@ -2,6 +2,12 @@
   {
     "id": "-1002682552255",
     "name": "Baccarat Kouamé",
-    "active": true
+    "active": false
+  },
+  {
+    "id": "-1003329818758",
+    "name": "VIP DE KOUAMÉ & JOKER",
+    "active": true,
+    "added_date": "2026-02-24 11:37"
   }
 ]
