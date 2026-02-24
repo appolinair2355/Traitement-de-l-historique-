@@ -3,8 +3,9 @@ import asyncio
 import logging
 import html
 from datetime import datetime, timezone
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram.ext import (Application, CommandHandler, CallbackQueryHandler,
+                           ContextTypes, MessageHandler, filters)
 from config import BOT_TOKEN, ADMIN_ID, CHANNEL_USERNAME, USER_PHONE
 
 logger = logging.getLogger(__name__)
@@ -71,20 +72,25 @@ def parse_date(s: str):
     return None
 
 def parse_search_options(args: list):
-    """Sépare les mots-clés des options limit: et from:/depuis:.
+    """Sépare les mots-clés des options limit:, from:/depuis: et to:/fin:/jusqu'au:.
 
-    Retourne (keywords, limit, from_date).
+    Retourne (keywords, limit, from_date, to_date).
     Options reconnues :
       limit:500              → analyser 500 derniers messages
-      from:2024-01-15        → depuis cette date
+      from:2024-01-15        → depuis cette date (début)
       from:2024-01-15 10:30  → date + heure (espace accepté)
       from:2024-01-15T10:30  → date + heure (T accepté)
       depuis:2024-01-15      → alias de from:
+      to:2024-01-20          → jusqu'à cette date (fin)
+      to:2024-01-20 23:59    → date de fin + heure
+      fin:2024-01-20         → alias de to:
+      jusqu'au:2024-01-20    → alias de to:
     """
     import re as _re
     keywords = []
     limit = None
     from_date = None
+    to_date = None
     i = 0
     while i < len(args):
         arg = args[i]
@@ -96,15 +102,45 @@ def parse_search_options(args: list):
                 pass
         elif lo.startswith('from:') or lo.startswith('depuis:'):
             date_val = arg.split(':', 1)[1]
-            # Si l'arg suivant ressemble à une heure HH:MM, on l'inclut dans la date
             if i + 1 < len(args) and _re.match(r'^\d{1,2}:\d{2}$', args[i + 1]):
                 date_val += ' ' + args[i + 1]
                 i += 1
             from_date = parse_date(date_val)
+        elif (lo.startswith('to:') or lo.startswith('fin:')
+              or lo.startswith("jusqu'au:") or lo.startswith('jusquau:')):
+            date_val = arg.split(':', 1)[1]
+            if i + 1 < len(args) and _re.match(r'^\d{1,2}:\d{2}$', args[i + 1]):
+                date_val += ' ' + args[i + 1]
+                i += 1
+            to_date = parse_date(date_val)
         else:
             keywords.append(arg)
         i += 1
-    return keywords, limit, from_date
+    return keywords, limit, from_date, to_date
+
+
+def _filter_games_by_date(games: list, from_date=None, to_date=None) -> list:
+    """Filtre une liste de jeux par plage de dates (champ 'date' du jeu)."""
+    if not from_date and not to_date:
+        return games
+    result = []
+    for g in games:
+        date_str = g.get('date', '')
+        if not date_str:
+            result.append(g)
+            continue
+        try:
+            dt = datetime.fromisoformat(str(date_str).replace('Z', '+00:00'))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            if from_date and dt < from_date:
+                continue
+            if to_date and dt > to_date:
+                continue
+            result.append(g)
+        except Exception:
+            result.append(g)
+    return result
 
 # État de la conversation : attend un ID de canal de l'admin
 _waiting_for_channel = {}
@@ -157,6 +193,112 @@ def _build_cmd_menu(target_uid: int, action: str) -> str:
     lines.append("\n/cancel pour annuler")
     return '\n'.join(lines)
 
+def _main_menu_keyboard(is_main: bool = True) -> InlineKeyboardMarkup:
+    """Clavier principal du bot organisé par section."""
+    rows = [
+        [InlineKeyboardButton("🔍 Recherche",      callback_data="menu:recherche"),
+         InlineKeyboardButton("🔮 Prédiction",     callback_data="menu:prediction")],
+        [InlineKeyboardButton("📊 Statistiques",   callback_data="menu:statistiques"),
+         InlineKeyboardButton("📡 Canaux",          callback_data="menu:canaux")],
+        [InlineKeyboardButton("📚 Documentation",  callback_data="menu:doc")],
+    ]
+    if is_main:
+        rows.append([InlineKeyboardButton("👥 Administration", callback_data="menu:admin")])
+    return InlineKeyboardMarkup(rows)
+
+
+def _back_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔙 Menu principal", callback_data="menu:accueil")]
+    ])
+
+
+# Textes de chaque section du menu
+_MENU_SECTIONS = {
+    "recherche": (
+        "🔍 <b>RECHERCHE</b>\n\n"
+        "<b>/hsearch</b> — Recherche dans l'historique du canal actif\n"
+        "  <code>/hsearch GAGNÉ Cœur</code>\n"
+        "  <code>/hsearch GAGNÉ from:2026-02-20 to:2026-02-23</code>\n"
+        "  <code>/hsearch GAGNÉ limit:500</code>\n\n"
+        "<b>/searchcard</b> — Recherche par valeur de carte (A, K, Q, J)\n"
+        "  <code>/searchcard K joueur</code>\n"
+        "  <code>/searchcard A banquier from:2026-02-20 to:2026-02-23</code>\n\n"
+        "<b>/search</b> — Recherche dans les données locales (export PDF)\n"
+        "  <code>/search rouge gagné</code>\n\n"
+        "💡 <i>Options disponibles partout : from:DATE  to:DATE  limit:N</i>"
+    ),
+    "prediction": (
+        "🔮 <b>PRÉDICTION</b>\n\n"
+        "<b>Étape 1 — Charger les jeux :</b>\n"
+        "  <code>/gload from:2026-02-20 to:2026-02-23</code>\n"
+        "  <code>/gload limit:500</code>\n\n"
+        "<b>Étape 2 — Lancer les prédictions :</b>\n"
+        "  <code>/gpredict 30</code> — Les 30 prochains jeux\n"
+        "  <code>/gpredict 900 950</code> — Du jeu #900 au #950\n"
+        "  <code>/gpredict 30 from:2026-02-20 to:2026-02-23</code>\n\n"
+        "<b>Autres :</b>\n"
+        "  <code>/gpredictload</code> — Charger depuis canaux de stats\n"
+        "  <code>/ganalyze</code> — Analyser un enregistrement (copier-coller)\n"
+        "  <code>/predictsetup</code> — Configurer les canaux de prédiction\n\n"
+        "💡 <i>Chaque prédiction analyse les manquements par catégorie :\n"
+        "V1/V2, Pa/I, costumes ♠♥♦♣, valeurs A/K/Q/Valet, structures 2K/3K</i>"
+    ),
+    "statistiques": (
+        "📊 <b>STATISTIQUES</b>\n\n"
+        "<b>/gstats</b> — Résumé complet des jeux chargés\n\n"
+        "<b>/gvictoire</b> — Victoires par résultat\n"
+        "  <code>/gvictoire joueur</code>  <code>/gvictoire banquier</code>  <code>/gvictoire nul</code>\n\n"
+        "<b>/gparite</b> — Parité du total\n"
+        "  <code>/gparite pair</code>  <code>/gparite impair</code>\n\n"
+        "<b>/gstructure</b> — Structure des cartes (2/2, 2/3, 3/2, 3/3)\n"
+        "  <code>/gstructure 2/3</code>\n\n"
+        "<b>/gplusmoins</b> — Plus/Moins de 6,5 ou 4,5\n"
+        "  <code>/gplusmoins j plus</code>  <code>/gplusmoins b moins</code>\n\n"
+        "<b>/gcostume</b> — Costumes manquants par main\n"
+        "  <code>/gcostume ♠ j</code>  <code>/gcostume ♥ b</code>\n\n"
+        "<b>/gecartmax</b> — Écart maximum dans toutes les catégories\n\n"
+        "<b>/gclear</b> — Effacer les jeux chargés"
+    ),
+    "canaux": (
+        "📡 <b>GESTION DES CANAUX</b>\n\n"
+        "<b>/addchannel</b> — Ajouter un canal (ID ou @username)\n\n"
+        "<b>/helpcl</b> — Sélectionner le canal actif (menu numéroté)\n"
+        "  → Tapez le numéro dans la liste pour activer\n\n"
+        "<b>/channels</b> — Voir tous les canaux configurés\n\n"
+        "<b>/usechannel -1001234567890</b> — Activer un canal par ID\n\n"
+        "<b>/removechannel -1001234567890</b> — Supprimer un canal\n\n"
+        "💡 <i>Après /addchannel, utilisez /gload pour charger les jeux du canal actif.</i>"
+    ),
+    "doc": (
+        "📚 <b>DOCUMENTATION</b>\n\n"
+        "Tapez <b>/documentation</b> pour recevoir le guide complet\n"
+        "avec des exemples détaillés pour chaque commande.\n\n"
+        "<b>Format des dates (toutes commandes) :</b>\n"
+        "  <code>from:2026-02-20</code> — depuis le 20 fév.\n"
+        "  <code>from:2026-02-20 08:00</code> — depuis le 20 fév. à 8h\n"
+        "  <code>to:2026-02-23</code> — jusqu'au 23 fév.\n"
+        "  <code>to:2026-02-23 22:00</code> — jusqu'au 23 fév. à 22h\n\n"
+        "<b>Format des enregistrements Baccarat :</b>\n"
+        "  <code>#N794. ✅3(K♦️4♦️9♦️) - 1(J♦️10♥️A♠️) #T4</code>\n\n"
+        "<b>/cancel</b> — Annuler n'importe quelle opération en cours\n"
+        "<b>/myid</b> — Afficher votre Telegram ID"
+    ),
+    "admin": (
+        "👥 <b>ADMINISTRATION</b>\n\n"
+        "<b>/addadmin 123456789</b> — Ajouter un administrateur\n"
+        "  → Menu de sélection des commandes autorisées\n"
+        "  → Ex : <code>1,3,5</code> ou <code>1-8,13</code>\n\n"
+        "<b>/setperm 123456789</b> — Modifier les permissions d'un admin\n\n"
+        "<b>/removeadmin 123456789</b> — Supprimer un administrateur\n\n"
+        "<b>/admins</b> — Liste de tous les admins et leurs commandes\n\n"
+        "<b>/connect</b> — Connexion Telegram (code SMS)\n"
+        "<b>/disconnect</b> — Déconnexion Telegram\n\n"
+        "💡 <i>Les sous-admins ne voient que leurs commandes autorisées.</i>"
+    ),
+}
+
+
 class Handlers:
     def __init__(self):
         self.syncing = False
@@ -201,16 +343,82 @@ class Handlers:
         'predictsetup': 'Configurer les canaux de prédiction',
         'gpredictload': 'Charger les jeux depuis les canaux de stats',
         'gpredict':     'Générer des prédictions par catégorie (N1 → N2)',
+        'searchcard':   'Rechercher les jeux par valeur de carte (A, K, Q, J)',
         'documentation':'Guide complet avec exemples d\'utilisation',
     }
+
+    async def handle_menu_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Gestion des boutons inline du menu."""
+        query = update.callback_query
+        uid = query.from_user.id
+        if not is_admin(uid):
+            await query.answer("❌ Accès refusé.")
+            return
+        await query.answer()
+
+        data = query.data  # ex: "menu:recherche"
+        section = data.split(":", 1)[1] if ":" in data else ""
+        main = is_main_admin(uid)
+
+        if section == "accueil":
+            channels = get_channels()
+            ch_lines = []
+            for ch in channels:
+                mark = "▶️" if ch.get('active') else "○"
+                name = ch.get('name') or str(ch['id'])
+                ch_lines.append(f"  {mark} <b>{name}</b>")
+            ch_block = ("\n".join(ch_lines)) if ch_lines else "  <i>Aucun canal configuré</i>"
+            text = (
+                "🎯 <b>Bot VIP KOUAMÉ &amp; JOKER</b>\n\n"
+                f"📡 <b>Canaux :</b>\n{ch_block}\n\n"
+                "Choisissez une section :"
+            )
+            await query.edit_message_text(text, parse_mode='HTML',
+                                          reply_markup=_main_menu_keyboard(main))
+            return
+
+        if section not in _MENU_SECTIONS:
+            await query.answer("Section inconnue.")
+            return
+
+        # Filtrer le contenu admin pour les sous-admins
+        if section == "admin" and not main:
+            await query.answer("❌ Réservé à l'administrateur principal.")
+            return
+
+        text = _MENU_SECTIONS[section]
+        await query.edit_message_text(text, parse_mode='HTML',
+                                      reply_markup=_back_keyboard())
+
+    async def menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/menu — Affiche le menu principal avec les sections de commandes."""
+        uid = update.effective_user.id
+        if not is_admin(uid):
+            return
+        main = is_main_admin(uid)
+        channels = get_channels()
+        ch_lines = []
+        for ch in channels:
+            mark = "▶️" if ch.get('active') else "○"
+            name = ch.get('name') or str(ch['id'])
+            ch_lines.append(f"  {mark} <b>{name}</b>")
+        ch_block = ("\n".join(ch_lines)) if ch_lines else "  <i>Aucun canal — tapez /addchannel</i>"
+        text = (
+            "🎯 <b>Bot VIP KOUAMÉ &amp; JOKER</b>\n\n"
+            f"📡 <b>Canaux :</b>\n{ch_block}\n\n"
+            "Choisissez une section :"
+        )
+        await update.message.reply_text(text, parse_mode='HTML',
+                                        reply_markup=_main_menu_keyboard(main))
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         uid = update.effective_user.id
         if not is_admin(uid):
             return
+        main = is_main_admin(uid)
 
-        # ── Sous-admin : afficher ses commandes autorisées ──
-        if not is_main_admin(uid):
+        # ── Sous-admin : afficher ses commandes autorisées avec menu ──
+        if not main:
             perms = get_admin_permissions(uid)
             first_name = update.effective_user.first_name or 'Admin'
             if not perms:
@@ -229,50 +437,41 @@ class Handlers:
             await update.message.reply_text(
                 f"👋 Bonjour <b>{first_name}</b> !\n\n"
                 "🎯 <b>Bot VIP KOUAMÉ &amp; JOKER</b>\n\n"
-                "📋 <b>Vos commandes autorisées :</b>\n\n"
+                "📋 <b>Vos commandes :</b>\n\n"
                 f"{cmds_text}\n\n"
-                "💡 Tapez /documentation pour voir des exemples détaillés.\n"
-                "<i>Vos accès sont gérés par l'administrateur principal.</i>",
-                parse_mode='HTML'
+                "💡 Tapez /documentation pour les exemples détaillés.",
+                parse_mode='HTML',
+                reply_markup=_main_menu_keyboard(is_main=False)
             )
             return
 
-        # ── Administrateur principal : tableau de bord ──
+        # ── Administrateur principal : tableau de bord avec menu ──
         channels = get_channels()
-
-        header = "🎯 <b>Bot VIP KOUAMÉ &amp; JOKER</b>\n"
-
         if channels:
             ch_lines = []
             for ch in channels:
-                mark = "▶️" if ch.get('active') else "   "
+                mark = "▶️" if ch.get('active') else "○"
                 name = ch.get('name') or str(ch['id'])
                 added = ch.get('added_at', '')
-                date_str = f"  <i>(ajouté le {added[:10]})</i>" if added else ''
-                ch_lines.append(f"{mark} <b>{name}</b> <code>{ch['id']}</code>{date_str}")
+                date_str = f" <i>({added[:10]})</i>" if added else ''
+                ch_lines.append(f"  {mark} <b>{name}</b> <code>{ch['id']}</code>{date_str}")
             ch_block = "\n".join(ch_lines)
-            actions = (
-                "📌 <b>Que souhaitez-vous faire ?</b>\n\n"
-                "  /addchannel — Ajouter un nouveau canal\n"
-                "  /helpcl — Changer de canal actif\n"
-                "  /removechannel — Supprimer un canal\n"
-                "  /gload — Charger et analyser les jeux\n"
-                "  /help — Voir toutes les commandes"
-            )
             await update.message.reply_text(
-                f"{header}\n"
+                "🎯 <b>Bot VIP KOUAMÉ &amp; JOKER</b>\n\n"
                 f"📡 <b>Canaux configurés :</b>\n{ch_block}\n\n"
-                f"{actions}",
-                parse_mode='HTML'
+                "Choisissez une section :",
+                parse_mode='HTML',
+                reply_markup=_main_menu_keyboard(is_main=True)
             )
         else:
             await update.message.reply_text(
-                f"{header}\n"
+                "🎯 <b>Bot VIP KOUAMÉ &amp; JOKER</b>\n\n"
                 "📡 <b>Aucun canal configuré.</b>\n\n"
-                "Pour commencer, ajoutez un canal :\n"
+                "Pour commencer :\n"
                 "  /addchannel — Ajouter un canal Telegram\n\n"
                 "Ou envoyez directement l'ID du canal (ex : <code>-1001234567890</code>)",
-                parse_mode='HTML'
+                parse_mode='HTML',
+                reply_markup=_main_menu_keyboard(is_main=True)
             )
             _waiting_for_channel[uid] = True
     
@@ -797,6 +996,129 @@ class Handlers:
 
         context.application.create_task(_do_search())
 
+    async def searchcard(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/searchcard [A|K|Q|J] [joueur|banquier|tous] — Recherche par valeur de carte."""
+        if not await self._perm(update, 'searchcard'):
+            return
+
+        from game_analyzer import FACE_CARDS
+        from storage import get_analyzed_games
+
+        USAGE = (
+            "📋 <b>Usage de /searchcard</b>\n\n"
+            "<code>/searchcard K</code> — Tous les jeux où K apparaît\n"
+            "<code>/searchcard K joueur</code> — K dans la main du Joueur\n"
+            "<code>/searchcard A banquier</code> — A dans la main du Banquier\n"
+            "<code>/searchcard K Q joueur</code> — K ou Q côté Joueur\n"
+            "<code>/searchcard K from:2026-02-20 to:2026-02-23</code> — sur une plage de dates\n\n"
+            "Valeurs acceptées : <b>A, K, Q, J</b>\n"
+            "Côtés : <b>joueur</b>, <b>banquier</b>, <b>tous</b> (défaut)"
+        )
+
+        if not context.args:
+            await update.message.reply_text(USAGE, parse_mode='HTML')
+            return
+
+        games = get_analyzed_games()
+        if not games:
+            await update.message.reply_text(
+                "❌ Aucun jeu chargé. Tapez /gpredictload d'abord."
+            )
+            return
+
+        # Extraire les options de date + mots restants
+        remaining_kw, _, from_date_sc, to_date_sc = parse_search_options(list(context.args))
+        games = _filter_games_by_date(games, from_date_sc, to_date_sc)
+
+        # Parser les arguments : valeurs de cartes + côté optionnel
+        args = [a.upper() for a in remaining_kw]
+
+        side = 'tous'
+        valeurs = []
+        for arg in args:
+            if arg in ('JOUEUR',):
+                side = 'joueur'
+            elif arg in ('BANQUIER',):
+                side = 'banquier'
+            elif arg in ('TOUS',):
+                side = 'tous'
+            elif arg in FACE_CARDS:
+                valeurs.append(arg)
+
+        if not valeurs:
+            await update.message.reply_text(
+                "❌ Aucune valeur valide. Utilisez A, K, Q ou J.\n\n" + USAGE,
+                parse_mode='HTML'
+            )
+            return
+
+        # Recherche dans les jeux
+        matching = []
+        for g in games:
+            face_j = g.get('face_j', set())
+            face_b = g.get('face_b', set())
+            found = False
+            for val in valeurs:
+                if side == 'joueur' and val in face_j:
+                    found = True
+                elif side == 'banquier' and val in face_b:
+                    found = True
+                elif side == 'tous' and (val in face_j or val in face_b):
+                    found = True
+            if found:
+                matching.append(g)
+
+        if not matching:
+            side_label = {'joueur': 'Joueur', 'banquier': 'Banquier', 'tous': 'Joueur ou Banquier'}[side]
+            await update.message.reply_text(
+                f"❌ Aucun jeu trouvé avec <b>{'/ '.join(valeurs)}</b> côté <b>{side_label}</b>.",
+                parse_mode='HTML'
+            )
+            return
+
+        # Statistiques d'écart
+        nums = sorted(int(g['numero']) for g in matching)
+        total_games = len(games)
+        pct = round(len(nums) / total_games * 100, 1)
+        ecarts = [nums[i+1] - nums[i] for i in range(len(nums)-1)] if len(nums) >= 2 else []
+        avg_ecart = round(sum(ecarts) / len(ecarts), 1) if ecarts else 0
+        max_ecart = max(ecarts) if ecarts else 0
+        last_num = nums[-1]
+        current_ecart = max(int(g['numero']) for g in games) - last_num
+
+        side_label = {'joueur': '🃏 Joueur', 'banquier': '🏦 Banquier', 'tous': '🃏 Joueur + 🏦 Banquier'}[side]
+        val_str = ' / '.join(valeurs)
+
+        # En-tête
+        header = (
+            f"🔍 <b>Recherche cartes : {val_str}</b>\n"
+            f"📌 Côté : {side_label}\n"
+            f"📊 Basé sur {total_games} jeux\n\n"
+            f"✅ <b>{len(nums)}</b> occurrences ({pct}% des jeux)\n"
+            f"📐 Écart moyen : <b>{avg_ecart}</b> | Max : <b>{max_ecart}</b>\n"
+            f"⏱ Écart actuel depuis #N{last_num} : <b>{current_ecart}</b>\n"
+        )
+
+        await update.message.reply_text(header, parse_mode='HTML')
+
+        # Liste des numéros par bloc de 50 lignes max
+        lines = [f"#{n}" for n in nums]
+        chunk_size = 50
+        for i in range(0, len(lines), chunk_size):
+            chunk = lines[i:i + chunk_size]
+            col1 = chunk[:len(chunk)//2 + len(chunk)%2]
+            col2 = chunk[len(chunk)//2 + len(chunk)%2:]
+            rows = []
+            for a, b in zip(col1, col2):
+                rows.append(f"{a:<12}{b}")
+            if len(col1) > len(col2):
+                rows.append(f"{col1[-1]}")
+            block = '\n'.join(rows)
+            await update.message.reply_text(
+                f"<code>{block}</code>",
+                parse_mode='HTML'
+            )
+
     async def handle_pdf(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Reçoit un PDF, l'analyse et renvoie la liste des numéros/costumes uniques."""
         if not is_admin(update.effective_user.id):
@@ -1071,17 +1393,18 @@ class Handlers:
 
         if not context.args:
             await update.message.reply_text(
-                "Usage: `/hsearch mot1 mot2 [limit:N] [from:AAAA-MM-JJ]`\n\n"
+                "Usage: `/hsearch mot1 mot2 [limit:N] [from:DATE] [to:DATE]`\n\n"
                 "Exemples :\n"
                 "`/hsearch GAGNÉ Cœur`\n"
-                "`/hsearch GAGNÉ limit:500`\n"
-                "`/hsearch GAGNÉ from:2024-06-01`\n\n"
+                "`/hsearch GAGNÉ from:2026-02-20 to:2026-02-23`\n"
+                "`/hsearch GAGNÉ from:2026-02-20 10:00 to:2026-02-23 23:59`\n"
+                "`/hsearch GAGNÉ limit:500`\n\n"
                 "Tapez /cancel pour arrêter et voir les résultats partiels.",
                 parse_mode='Markdown'
             )
             return
 
-        keywords, limit, from_date = parse_search_options(list(context.args))
+        keywords, limit, from_date, to_date = parse_search_options(list(context.args))
         if not keywords:
             await update.message.reply_text("❌ Aucun mot-clé fourni.")
             return
@@ -1098,8 +1421,12 @@ class Handlers:
         scope_desc = ''
         if limit:
             scope_desc = f" | 🔢 {limit} derniers messages"
+        elif from_date and to_date:
+            scope_desc = f" | 📅 {from_date.strftime('%d/%m/%Y %H:%M')} → {to_date.strftime('%d/%m/%Y %H:%M')}"
         elif from_date:
             scope_desc = f" | 📅 depuis {from_date.strftime('%d/%m/%Y %H:%M')}"
+        elif to_date:
+            scope_desc = f" | 📅 jusqu'au {to_date.strftime('%d/%m/%Y %H:%M')}"
 
         msg = await update.message.reply_text(
             f"🔍 Recherche `{' '.join(keywords)}` dans *{html.escape(str(channel_name))}*{scope_desc}\n"
@@ -1126,6 +1453,7 @@ class Handlers:
                     channel_id, keywords,
                     limit=limit,
                     from_date=from_date,
+                    to_date=to_date,
                     progress_callback=progress,
                     cancel_check=lambda: _search_cancel.get(uid, False)
                 )
@@ -1266,16 +1594,16 @@ class Handlers:
             await update.message.reply_text("⚠️ Une recherche est déjà en cours. Tapez /cancel pour l'arrêter.")
             return
 
-        _, limit, from_date = parse_search_options(list(context.args)) if context.args else ([], None, None)
+        _, limit, from_date, to_date = parse_search_options(list(context.args)) if context.args else ([], None, None, None)
 
         if not limit and not from_date:
             await update.message.reply_text(
                 "⚠️ <b>Paramètre requis</b>\n\n"
-                "Vous devez préciser une date ou une limite pour éviter de charger tout l'historique.\n\n"
+                "Vous devez préciser une date de début ou une limite.\n\n"
                 "<b>Exemples :</b>\n"
                 "<code>/gload from:2026-02-01</code>\n"
-                "<code>/gload from:2026-02-01 10:30</code>\n"
-                "<code>/gload from:2026-02-01T10:30</code>\n"
+                "<code>/gload from:2026-02-20 to:2026-02-23</code>\n"
+                "<code>/gload from:2026-02-20 10:00 to:2026-02-23 23:59</code>\n"
                 "<code>/gload limit:500</code>",
                 parse_mode='HTML'
             )
@@ -1287,8 +1615,12 @@ class Handlers:
         scope_desc = ''
         if limit:
             scope_desc = f" | 🔢 {limit} derniers messages"
+        elif from_date and to_date:
+            scope_desc = f" | 📅 {from_date.strftime('%d/%m/%Y %H:%M')} → {to_date.strftime('%d/%m/%Y %H:%M')}"
         elif from_date:
             scope_desc = f" | 📅 depuis {from_date.strftime('%d/%m/%Y %H:%M')}"
+        elif to_date:
+            scope_desc = f" | 📅 jusqu'au {to_date.strftime('%d/%m/%Y %H:%M')}"
 
         msg = await update.message.reply_text(
             f"🔄 Chargement des jeux depuis *{html.escape(str(channel_name))}*{scope_desc}\n"
@@ -1315,6 +1647,7 @@ class Handlers:
                     channel_id,
                     limit=limit,
                     from_date=from_date,
+                    to_date=to_date,
                     progress_callback=progress,
                     cancel_check=lambda: _search_cancel.get(uid, False)
                 )
@@ -1324,9 +1657,13 @@ class Handlers:
                     return
 
                 games = []
-                for text in records:
+                for rec in records:
+                    text = rec['text'] if isinstance(rec, dict) else rec
+                    date_str = rec.get('date', '') if isinstance(rec, dict) else ''
                     g = parse_game(text)
                     if g:
+                        if date_str:
+                            g['date'] = date_str
                         games.append(g)
 
                 save_analyzed_games(games)
@@ -2077,7 +2414,18 @@ class Handlers:
             )
             return
 
-        args = context.args if context.args else []
+        raw_args = context.args if context.args else []
+
+        # Extraire options de date si présentes
+        num_kw, _, from_date_gp, to_date_gp = parse_search_options(raw_args)
+        games = _filter_games_by_date(games, from_date_gp, to_date_gp)
+        if not games:
+            await update.message.reply_text(
+                "❌ Aucun jeu dans cette plage de dates. Vérifiez les paramètres from:/to:."
+            )
+            return
+
+        args = num_kw  # arguments restants (numéros)
         all_nums = sorted(int(g['numero']) for g in games)
         last_known = all_nums[-1]
 
@@ -2088,23 +2436,26 @@ class Handlers:
         elif len(args) == 1 and args[0].isdigit():
             n = int(args[0])
             if n <= 100:
-                # Interpréter comme "les N prochains jeux"
                 from_num = last_known + 1
                 to_num = last_known + n
             else:
-                # Interpréter comme un numéro de départ
                 from_num = n
                 to_num = n + 19
         else:
+            date_hint = ''
+            if from_date_gp and to_date_gp:
+                date_hint = (f"\n📅 Filtre actif : {from_date_gp.strftime('%d/%m/%Y')} → "
+                             f"{to_date_gp.strftime('%d/%m/%Y')} ({len(games)} jeux)")
             await update.message.reply_text(
                 "📋 <b>Usage de /gpredict</b>\n\n"
                 "<code>/gpredict N1 N2</code> — de #N1 à #N2\n"
-                "<code>/gpredict N</code> — les N prochains jeux\n\n"
-                f"Dernier jeu connu : <b>#N{last_known}</b>\n\n"
+                "<code>/gpredict N</code> — les N prochains jeux\n"
+                "<code>/gpredict N1 N2 from:2026-02-20 to:2026-02-23</code> — sur plage de dates\n\n"
+                f"Dernier jeu connu : <b>#N{last_known}</b>{date_hint}\n\n"
                 f"Exemples :\n"
                 f"  <code>/gpredict {last_known+1} {last_known+50}</code>\n"
                 f"  <code>/gpredict 30</code> — les 30 prochains\n"
-                f"  <code>/gpredict 100</code> — les 100 prochains",
+                f"  <code>/gpredict 30 from:2026-02-20 to:2026-02-23</code>",
                 parse_mode='HTML'
             )
             return
@@ -2189,6 +2540,8 @@ def setup_bot():
     )
 
     app.add_handler(CommandHandler("start", handlers.start))
+    app.add_handler(CommandHandler("menu", handlers.menu))
+    app.add_handler(CallbackQueryHandler(handlers.handle_menu_callback, pattern=r"^menu:"))
     app.add_handler(CommandHandler("connect", handlers.connect))
     app.add_handler(CommandHandler("code", handlers.code))
     app.add_handler(CommandHandler("disconnect", handlers.disconnect))
@@ -2198,6 +2551,7 @@ def setup_bot():
     app.add_handler(CommandHandler("filter", handlers.filter_cmd))
     app.add_handler(CommandHandler("stats", handlers.stats))
     app.add_handler(CommandHandler("search", handlers.search))
+    app.add_handler(CommandHandler("searchcard", handlers.searchcard))
     app.add_handler(CommandHandler("clear", handlers.clear))
     app.add_handler(CommandHandler("addchannel", handlers.addchannel))
     app.add_handler(CommandHandler("help", handlers.help_cmd))

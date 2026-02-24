@@ -107,20 +107,28 @@ def _all_categories(cats: dict) -> dict:
         '👤 Joueur 3K':          j3k,
         '🏦 Banquier 2K':        b2k,
         '🏦 Banquier 3K':        b3k,
-        '📈 J.Plus 6.5':         cats['plusmoins_j']['Plus de 6,5'],
-        '📉 J.Moins 4.5':        cats['plusmoins_j']['Moins de 4,5'],
-        '↔️ J.Neutre':           cats['plusmoins_j']['Neutre'],
-        '📈 B.Plus 6.5':         cats['plusmoins_b']['Plus de 6,5'],
-        '📉 B.Moins 4.5':        cats['plusmoins_b']['Moins de 4,5'],
-        '↔️ B.Neutre':           cats['plusmoins_b']['Neutre'],
-        '♠ Manque J':            cats['missing_j']['♠'],
-        '♥ Manque J':            cats['missing_j']['♥'],
-        '♦ Manque J':            cats['missing_j']['♦'],
-        '♣ Manque J':            cats['missing_j']['♣'],
-        '♠ Manque B':            cats['missing_b']['♠'],
-        '♥ Manque B':            cats['missing_b']['♥'],
-        '♦ Manque B':            cats['missing_b']['♦'],
-        '♣ Manque B':            cats['missing_b']['♣'],
+        '📈 Joueur Plus 6.5':    cats['plusmoins_j']['Plus de 6,5'],
+        '📉 Joueur Moins 4.5':   cats['plusmoins_j']['Moins de 4,5'],
+        '↔️ Joueur Neutre':      cats['plusmoins_j']['Neutre'],
+        '📈 Banquier Plus 6.5':  cats['plusmoins_b']['Plus de 6,5'],
+        '📉 Banquier Moins 4.5': cats['plusmoins_b']['Moins de 4,5'],
+        '↔️ Banquier Neutre':    cats['plusmoins_b']['Neutre'],
+        '♠ Manque Joueur':       cats['missing_j']['♠'],
+        '♥ Manque Joueur':       cats['missing_j']['♥'],
+        '♦ Manque Joueur':       cats['missing_j']['♦'],
+        '♣ Manque Joueur':       cats['missing_j']['♣'],
+        '♠ Manque Banquier':     cats['missing_b']['♠'],
+        '♥ Manque Banquier':     cats['missing_b']['♥'],
+        '♦ Manque Banquier':     cats['missing_b']['♦'],
+        '♣ Manque Banquier':     cats['missing_b']['♣'],
+        '🃏 A Joueur':           cats['face_j']['A'],
+        '🃏 K Joueur':           cats['face_j']['K'],
+        '🃏 Q Joueur':           cats['face_j']['Q'],
+        '🃏 Valet Joueur':       cats['face_j']['J'],
+        '🎴 A Banquier':         cats['face_b']['A'],
+        '🎴 K Banquier':         cats['face_b']['K'],
+        '🎴 Q Banquier':         cats['face_b']['Q'],
+        '🎴 Valet Banquier':     cats['face_b']['J'],
     }
 
 
@@ -195,21 +203,21 @@ def generate_predictions(games: list, from_num: int, to_num: int,
 def generate_category_list(games: list, from_num: int, to_num: int,
                             min_confidence: int = 38) -> dict:
     """
-    Génère une liste de prédictions PAR CATÉGORIE.
+    Génère une liste de prédictions PAR CATÉGORIE basée sur l'analyse des manquements.
 
-    Règle d'exclusivité : chaque numéro de jeu n'apparaît que dans UNE seule
-    catégorie — celle pour laquelle il a la confiance la plus haute.
+    Algorithme :
+      Pour chaque catégorie :
+        1. On répertorie tous les écarts historiques entre occurrences (les "manquements")
+        2. Chaque écart de longueur L donne une prédiction :
+             predicted = last_occurrence + L
+        3. On projette aussi les cycles suivants :
+             predicted = last_occurrence + L + k * avg_ecart  (k = 1, 2, ...)
+        4. La confiance dépend de : fréquence du gap historique × urgence courante
+        5. On élimine les numéros consécutifs (spacing >= 2 obligatoire)
+        6. Attribution exclusive : chaque numéro de jeu → UNE seule catégorie
+           (la plus confiante gagne)
 
-    Retourne un dict ordonné :
-      {
-        cat_name: {
-          'nums': [game_numbers...],
-          'conf_avg': float,   # confiance moyenne de la catégorie
-          'emoji': str,
-        }
-      }
-    Seules les catégories avec au moins une prédiction sont incluses.
-    Le dict est trié par confiance moyenne décroissante.
+    Retourne un dict trié par confiance décroissante.
     """
     if not games:
         return {}
@@ -221,122 +229,230 @@ def generate_category_list(games: list, from_num: int, to_num: int,
     all_nums = [int(g['numero']) for g in games]
     last_known = max(all_nums)
 
-    # Étape 1 : pour chaque futur numéro, calculer la confiance par catégorie
-    assignments: dict[int, tuple[str, int]] = {}   # {numero: (best_cat, best_conf)}
-
-    for target in range(from_num, to_num + 1):
-        delta = max(0, target - last_known)
-        best_cat = None
-        best_conf = -1
-
-        for cat_name, data in pd.items():
-            freq = data['freq']
-            stats = data['stats']
-            if freq == 0 or stats['count'] == 0:
-                continue
-            base_conf = freq * 100
-            conf = _confidence(stats, freq, delta)
-            # On ne garde que les catégories réellement "en avance sur leur cycle"
-            # Seuil : confiance absolue >= min_confidence ET > fréquence de base
-            if conf >= min_confidence and conf > base_conf:
-                if conf > best_conf:
-                    best_conf = conf
-                    best_cat = cat_name
-
-        if best_cat is not None:
-            assignments[target] = (best_cat, best_conf)
-
-    # Étape 2 : regrouper par catégorie
-    cat_groups: dict[str, list] = {}
-    cat_conf_sum: dict[str, float] = {}
-    cat_conf_cnt: dict[str, int] = {}
-
-    for num, (cat, conf) in sorted(assignments.items()):
-        if cat not in cat_groups:
-            cat_groups[cat] = []
-            cat_conf_sum[cat] = 0
-            cat_conf_cnt[cat] = 0
-        cat_groups[cat].append(num)
-        cat_conf_sum[cat] += conf
-        cat_conf_cnt[cat] += 1
-
-    # Emoji mapping pour les catégories
     EMOJI_MAP = {
-        '🏆 Victoire Joueur':   '🏆',
-        '🏆 Victoire Banquier': '🏆',
-        '🤝 Match Nul':         '🤝',
-        '📊 Pair':              '📊',
-        '📊 Impair':            '📊',
-        '🎴 2/2':               '🎴',
-        '🎴 2/3':               '🎴',
-        '🎴 3/2':               '🎴',
-        '🎴 3/3':               '🎴',
-        '👤 Joueur 2K':         '👤',
-        '👤 Joueur 3K':         '👤',
-        '🏦 Banquier 2K':       '🏦',
-        '🏦 Banquier 3K':       '🏦',
-        '📈 J.Plus 6.5':        '📈',
-        '📉 J.Moins 4.5':       '📉',
-        '↔️ J.Neutre':          '↔️',
-        '📈 B.Plus 6.5':        '📈',
-        '📉 B.Moins 4.5':       '📉',
-        '↔️ B.Neutre':          '↔️',
-        '♠ Manque J':           '♠️',
-        '♥ Manque J':           '♥️',
-        '♦ Manque J':           '♦️',
-        '♣ Manque J':           '♣️',
-        '♠ Manque B':           '♠️',
-        '♥ Manque B':           '♥️',
-        '♦ Manque B':           '♦️',
-        '♣ Manque B':           '♣️',
+        '🏆 Victoire Joueur':    '🏆',
+        '🏆 Victoire Banquier':  '🏆',
+        '🤝 Match Nul':          '🤝',
+        '📊 Pair':               '📊',
+        '📊 Impair':             '📊',
+        '🎴 2/2':                '🎴',
+        '🎴 2/3':                '🎴',
+        '🎴 3/2':                '🎴',
+        '🎴 3/3':                '🎴',
+        '👤 Joueur 2K':          '👤',
+        '👤 Joueur 3K':          '👤',
+        '🏦 Banquier 2K':        '🏦',
+        '🏦 Banquier 3K':        '🏦',
+        '📈 Joueur Plus 6.5':    '📈',
+        '📉 Joueur Moins 4.5':   '📉',
+        '↔️ Joueur Neutre':      '↔️',
+        '📈 Banquier Plus 6.5':  '📈',
+        '📉 Banquier Moins 4.5': '📉',
+        '↔️ Banquier Neutre':    '↔️',
+        '♠ Manque Joueur':       '♠️',
+        '♥ Manque Joueur':       '♥️',
+        '♦ Manque Joueur':       '♦️',
+        '♣ Manque Joueur':       '♣️',
+        '♠ Manque Banquier':     '♠️',
+        '♥ Manque Banquier':     '♥️',
+        '♦ Manque Banquier':     '♦️',
+        '♣ Manque Banquier':     '♣️',
+        '🃏 A Joueur':           '🃏',
+        '🃏 K Joueur':           '🃏',
+        '🃏 Q Joueur':           '🃏',
+        '🃏 Valet Joueur':       '🃏',
+        '🎴 A Banquier':         '🎴',
+        '🎴 K Banquier':         '🎴',
+        '🎴 Q Banquier':         '🎴',
+        '🎴 Valet Banquier':     '🎴',
     }
 
-    # Notation courte pour chaque catégorie (affichée sur chaque ligne de prédiction)
     NOTATION_MAP = {
-        '🏆 Victoire Joueur':   'V1',
-        '🏆 Victoire Banquier': 'V2',
-        '🤝 Match Nul':         'X',
-        '📊 Pair':              'Pa',
-        '📊 Impair':            'I',
-        '🎴 2/2':               '2/2',
-        '🎴 2/3':               '2/3',
-        '🎴 3/2':               '3/2',
-        '🎴 3/3':               '3/3',
-        '👤 Joueur 2K':         'J2K',
-        '👤 Joueur 3K':         'J3K',
-        '🏦 Banquier 2K':       'B2K',
-        '🏦 Banquier 3K':       'B3K',
-        '📈 J.Plus 6.5':        'J+',
-        '📉 J.Moins 4.5':       'J-',
-        '↔️ J.Neutre':          'J=',
-        '📈 B.Plus 6.5':        'B+',
-        '📉 B.Moins 4.5':       'B-',
-        '↔️ B.Neutre':          'B=',
-        '♠ Manque J':           '♠J',
-        '♥ Manque J':           '❤J',
-        '♦ Manque J':           '♦J',
-        '♣ Manque J':           '♣J',
-        '♠ Manque B':           '♠B',
-        '♥ Manque B':           '❤B',
-        '♦ Manque B':           '♦B',
-        '♣ Manque B':           '♣B',
+        '🏆 Victoire Joueur':    'V1',
+        '🏆 Victoire Banquier':  'V2',
+        '🤝 Match Nul':          'X',
+        '📊 Pair':               'Pa',
+        '📊 Impair':             'I',
+        '🎴 2/2':                '2/2',
+        '🎴 2/3':                '2/3',
+        '🎴 3/2':                '3/2',
+        '🎴 3/3':                '3/3',
+        '👤 Joueur 2K':          'Joueur 2K',
+        '👤 Joueur 3K':          'Joueur 3K',
+        '🏦 Banquier 2K':        'Banquier 2K',
+        '🏦 Banquier 3K':        'Banquier 3K',
+        '📈 Joueur Plus 6.5':    'Joueur+',
+        '📉 Joueur Moins 4.5':   'Joueur-',
+        '↔️ Joueur Neutre':      'Joueur=',
+        '📈 Banquier Plus 6.5':  'Banquier+',
+        '📉 Banquier Moins 4.5': 'Banquier-',
+        '↔️ Banquier Neutre':    'Banquier=',
+        '♠ Manque Joueur':       'Joueur ♠️',
+        '♥ Manque Joueur':       'Joueur ❤️',
+        '♦ Manque Joueur':       'Joueur ♦️',
+        '♣ Manque Joueur':       'Joueur ♣️',
+        '♠ Manque Banquier':     'Banquier ♠️',
+        '♥ Manque Banquier':     'Banquier ❤️',
+        '♦ Manque Banquier':     'Banquier ♦️',
+        '♣ Manque Banquier':     'Banquier ♣️',
+        '🃏 A Joueur':           'Joueur valeur A',
+        '🃏 K Joueur':           'Joueur valeur K',
+        '🃏 Q Joueur':           'Joueur valeur Q',
+        '🃏 Valet Joueur':       'Joueur valeur Valet',
+        '🎴 A Banquier':         'Banquier valeur A',
+        '🎴 K Banquier':         'Banquier valeur K',
+        '🎴 Q Banquier':         'Banquier valeur Q',
+        '🎴 Valet Banquier':     'Banquier valeur Valet',
     }
 
-    # Étape 3 : construire le résultat trié par confiance moyenne décroissante
+    # Catégories exclues des prédictions (non pertinentes pour le joueur)
+    EXCLUDED_CATS = {'↔️ Joueur Neutre', '↔️ Banquier Neutre'}
+
+    # ─── Étape 1 : candidats par catégorie depuis analyse des manquements ───────
+    # {cat_name: {game_num: confidence}}
+    cat_candidates: dict[str, dict[int, int]] = {}
+
+    for cat_name, data in pd.items():
+        if cat_name in EXCLUDED_CATS:
+            continue
+        freq = data['freq']
+        stats = data['stats']
+        nums_raw = data['nums']
+
+        if freq == 0 or stats['count'] < 2:
+            continue
+
+        nums = sorted(int(n) for n in nums_raw)
+        ecarts = stats['all_ecarts']          # gaps historiques entre occurrences
+        avg_ecart = stats['avg_ecart'] or 1
+        max_ecart = stats['max_ecart'] or avg_ecart
+        last_occ = stats['last_pos']
+        current_ecart = stats['current_ecart']
+
+        # Match Nul est rare : on prédit à partir de l'écart max historique
+        cycle_ecart = max_ecart if cat_name == '🤝 Match Nul' else avg_ecart
+
+        if not ecarts:
+            continue
+
+        # Urgence : catégorie en retard sur son cycle moyen
+        overdue_ratio = current_ecart / avg_ecart if avg_ecart else 1.0
+        overdue_bonus = min(25, int(max(0, overdue_ratio - 1.0) * 12))
+
+        # Base de confiance de la catégorie
+        base = freq * 100
+
+        candidates: dict[int, int] = {}
+
+        # Pondération des gaps : les gaps récents (derniers 30%) comptent double.
+        # Cela permet au prédicateur de s'adapter aux changements de rythme récents.
+        n_recent = max(1, len(ecarts) // 3)
+        recent_ecarts = ecarts[-n_recent:]
+        recent_avg = sum(recent_ecarts) / len(recent_ecarts) if recent_ecarts else avg_ecart
+        # Cycle de prédiction = moyenne pondérée (70% historique + 30% récent)
+        blended_ecart = int(avg_ecart * 0.7 + recent_avg * 0.3)
+        if cat_name == '🤝 Match Nul':
+            blended_ecart = max_ecart  # Match Nul toujours sur écart max
+
+        # Bonus retard extrême : si la catégorie dépasse son propre écart max, priorité absolue
+        extreme_overdue = current_ecart > max_ecart
+        extreme_bonus = min(35, int((current_ecart - max_ecart) * 3)) if extreme_overdue else 0
+
+        # Plancher de confiance : seulement pour les catégories avec peu de données
+        # (évite que les catégories fréquentes dominent via floor artificiel)
+        conf_floor = int(base * 0.72) if freq < 0.25 else int(base * 0.55)
+
+        # Gaps pondérés : les gaps récents comptent 2×, les anciens 1×
+        weighted_gaps = ecarts[:-n_recent] + recent_ecarts * 2
+        total_weight = len(weighted_gaps)
+
+        # Pour chaque gap historique unique, projeter dans la plage
+        unique_gaps = sorted(set(ecarts))
+        for gap in unique_gaps:
+            # Fréquence pondérée du gap
+            gap_weight = weighted_gaps.count(gap) / total_weight if total_weight else 0
+
+            # Projeter ce gap sur 3 cycles à partir de la dernière occurrence
+            for cycle in range(1, 4):
+                projected = int(last_occ + gap + (cycle - 1) * blended_ecart)
+                if from_num <= projected <= to_num:
+                    cycle_decay = 0.9 ** (cycle - 1)
+                    conf = int(base * gap_weight * 2.5 * cycle_decay
+                               + base * 0.25
+                               + overdue_bonus + extreme_bonus)
+                    conf = max(conf, conf_floor)
+                    conf = min(95, max(0, conf))
+                    if conf >= min_confidence:
+                        candidates[projected] = max(candidates.get(projected, 0), conf)
+
+        # Prédictions sur le cycle pur (blended_ecart)
+        for mult in range(1, 6):
+            projected = int(last_occ + mult * blended_ecart)
+            if from_num <= projected <= to_num:
+                decay = 0.85 ** (mult - 1)
+                conf = int(base * decay * min(2.0, overdue_ratio)
+                           + overdue_bonus + extreme_bonus)
+                conf = max(conf, conf_floor)
+                conf = min(95, max(0, conf))
+                if conf >= min_confidence:
+                    candidates[projected] = max(candidates.get(projected, 0), conf)
+
+        if not candidates:
+            continue
+
+        # ── Règle : pas de numéros consécutifs dans la même catégorie ──────────
+        # Trier par confiance décroissante, puis garder seulement ceux espacés
+        sorted_cands = sorted(candidates.items(), key=lambda x: -x[1])
+        non_consec: list[tuple[int, int]] = []
+        for g_num, conf in sorted_cands:
+            if not any(abs(g_num - kept_num) <= 1 for kept_num, _ in non_consec):
+                non_consec.append((g_num, conf))
+            if len(non_consec) >= 15:
+                break
+
+        if non_consec:
+            cat_candidates[cat_name] = {g: c for g, c in non_consec}
+
+    # ─── Étape 2 : attribution exclusive (un numéro → une seule catégorie) ──────
+    # Tri global : tous les (game_num, cat, conf) ensemble, meilleure conf d'abord.
+    # On attribue chaque numéro à la catégorie la plus confiante,
+    # et on limite à MAX_PER_CAT prédictions par catégorie pour forcer la diversité.
+    MAX_PER_CAT = 4
+    all_candidates: list[tuple[int, str, int]] = []
+    for cat_name, cands in cat_candidates.items():
+        for g_num, conf in cands.items():
+            all_candidates.append((conf, g_num, cat_name))
+    all_candidates.sort(reverse=True)  # meilleure confiance d'abord
+
+    assignments: dict[int, tuple[str, int]] = {}  # game_num → (cat_name, conf)
+    cat_counts: dict[str, int] = {}               # cat_name → nb attribués
+
+    for conf, g_num, cat_name in all_candidates:
+        if g_num in assignments:
+            continue  # numéro déjà attribué
+        if cat_counts.get(cat_name, 0) >= MAX_PER_CAT:
+            continue  # catégorie déjà saturée
+        assignments[g_num] = (cat_name, conf)
+        cat_counts[cat_name] = cat_counts.get(cat_name, 0) + 1
+
+    # ─── Étape 3 : regrouper par catégorie après attribution ────────────────────
+    cat_groups: dict[str, list[tuple[int, int]]] = {}
+    for g_num, (cat_name, conf) in sorted(assignments.items()):
+        cat_groups.setdefault(cat_name, []).append((g_num, conf))
+
+    # ─── Étape 4 : construire le résultat ───────────────────────────────────────
     result = {}
-    sorted_cats = sorted(
-        cat_groups.keys(),
-        key=lambda c: -(cat_conf_sum[c] / max(cat_conf_cnt[c], 1))
-    )
-    for cat in sorted_cats:
-        conf_avg = cat_conf_sum[cat] / max(cat_conf_cnt[cat], 1)
-        result[cat] = {
-            'nums': sorted(cat_groups[cat]),
+    for cat_name, preds in cat_groups.items():
+        nums = [g for g, _ in preds]
+        conf_avg = sum(c for _, c in preds) / len(preds)
+        result[cat_name] = {
+            'nums': sorted(nums),
             'conf_avg': round(conf_avg, 1),
-            'emoji': EMOJI_MAP.get(cat, '🎯'),
-            'notation': NOTATION_MAP.get(cat, cat.split()[-1]),
+            'emoji': EMOJI_MAP.get(cat_name, '🎯'),
+            'notation': NOTATION_MAP.get(cat_name, cat_name.split()[-1]),
         }
 
+    result = dict(sorted(result.items(), key=lambda x: -x[1]['conf_avg']))
     return result
 
 
@@ -357,38 +473,46 @@ def format_category_list(cat_results: dict, total_games: int,
         if not nums:
             continue
 
-        # Noms affichés complets (probabilité d'apparition, pas "manquant")
+        # Noms affichés complets
         _DISPLAY_NAMES = {
-            '🏆 Victoire Joueur':   'Victoire Joueur',
-            '🏆 Victoire Banquier': 'Victoire Banquier',
-            '🤝 Match Nul':         'Match Nul',
-            '📊 Pair':              'Pair',
-            '📊 Impair':            'Impair',
-            '🎴 2/2':               'Structure 2/2',
-            '🎴 2/3':               'Structure 2/3',
-            '🎴 3/2':               'Structure 3/2',
-            '🎴 3/3':               'Structure 3/3',
-            '👤 Joueur 2K':         'Joueur 2 cartes',
-            '👤 Joueur 3K':         'Joueur 3 cartes',
-            '🏦 Banquier 2K':       'Banquier 2 cartes',
-            '🏦 Banquier 3K':       'Banquier 3 cartes',
-            '📈 J.Plus 6.5':        'Joueur Plus 6.5',
-            '📉 J.Moins 4.5':       'Joueur Moins 4.5',
-            '↔️ J.Neutre':          'Joueur Neutre',
-            '📈 B.Plus 6.5':        'Banquier Plus 6.5',
-            '📉 B.Moins 4.5':       'Banquier Moins 4.5',
-            '↔️ B.Neutre':          'Banquier Neutre',
-            '♠ Manque J':           'Prob ♠ Joueur',
-            '♥ Manque J':           'Prob ❤ Joueur',
-            '♦ Manque J':           'Prob ♦ Joueur',
-            '♣ Manque J':           'Prob ♣ Joueur',
-            '♠ Manque B':           'Prob ♠ Banquier',
-            '♥ Manque B':           'Prob ❤ Banquier',
-            '♦ Manque B':           'Prob ♦ Banquier',
-            '♣ Manque B':           'Prob ♣ Banquier',
+            '🏆 Victoire Joueur':    'Victoire Joueur',
+            '🏆 Victoire Banquier':  'Victoire Banquier',
+            '🤝 Match Nul':          'Match Nul',
+            '📊 Pair':               'Pair',
+            '📊 Impair':             'Impair',
+            '🎴 2/2':                'Structure 2/2',
+            '🎴 2/3':                'Structure 2/3',
+            '🎴 3/2':                'Structure 3/2',
+            '🎴 3/3':                'Structure 3/3',
+            '👤 Joueur 2K':          'Joueur 2 cartes',
+            '👤 Joueur 3K':          'Joueur 3 cartes',
+            '🏦 Banquier 2K':        'Banquier 2 cartes',
+            '🏦 Banquier 3K':        'Banquier 3 cartes',
+            '📈 Joueur Plus 6.5':    'Joueur Plus 6.5',
+            '📉 Joueur Moins 4.5':   'Joueur Moins 4.5',
+            '↔️ Joueur Neutre':      'Joueur Neutre',
+            '📈 Banquier Plus 6.5':  'Banquier Plus 6.5',
+            '📉 Banquier Moins 4.5': 'Banquier Moins 4.5',
+            '↔️ Banquier Neutre':    'Banquier Neutre',
+            '♠ Manque Joueur':       'Prob ♠ Joueur',
+            '♥ Manque Joueur':       'Prob ❤ Joueur',
+            '♦ Manque Joueur':       'Prob ♦ Joueur',
+            '♣ Manque Joueur':       'Prob ♣ Joueur',
+            '♠ Manque Banquier':     'Prob ♠ Banquier',
+            '♥ Manque Banquier':     'Prob ❤ Banquier',
+            '♦ Manque Banquier':     'Prob ♦ Banquier',
+            '♣ Manque Banquier':     'Prob ♣ Banquier',
+            '🃏 A Joueur':           'As côté Joueur',
+            '🃏 K Joueur':           'Roi côté Joueur',
+            '🃏 Q Joueur':           'Dame côté Joueur',
+            '🃏 Valet Joueur':       'Valet côté Joueur',
+            '🎴 A Banquier':         'As côté Banquier',
+            '🎴 K Banquier':         'Roi côté Banquier',
+            '🎴 Q Banquier':         'Dame côté Banquier',
+            '🎴 Valet Banquier':     'Valet côté Banquier',
         }
         clean_name = _DISPLAY_NAMES.get(cat_name,
-                     cat_name.lstrip('🏆📊🎴👤🏦📈📉↔️♠️♥️♦️♣️🤝 '))
+                     cat_name.lstrip('🏆📊🎴👤🏦📈📉↔️♠️♥️♦️♣️🤝🃏 '))
 
         lines = [
             f"{data['emoji']} <b>{notation}</b> — {clean_name}",
@@ -405,21 +529,25 @@ def format_category_list(cat_results: dict, total_games: int,
 
     # Résumé final
     nb_cats = len(cat_results)
+
     summary_lines = [
         f"📋 <b>RÉSUMÉ DES PRÉDICTIONS</b>",
-        f"🎲 Basé sur {total_games} jeux analysés",
-        f"📐 Plage : #N{from_num} → #N{to_num}",
-        f"🎯 {total_preds} prédiction(s) en {nb_cats} catégorie(s)",
+        f"🎲 Basé sur {total_games} jeux  |  Plage #N{from_num} → #N{to_num}",
+        f"🎯 {total_preds} prédiction(s) dans {nb_cats} catégorie(s)",
         "",
     ]
+
+    # Liste chronologique simple : #numéro  notation
+    all_entries = []
     for cat_name, data in cat_results.items():
         notation = data['notation']
-        nums_str = ', '.join(f'#{n}' for n in data['nums'][:6])
-        if len(data['nums']) > 6:
-            nums_str += f' … (+{len(data["nums"])-6})'
-        summary_lines.append(
-            f"{data['emoji']} <b>{notation}</b> ({data['conf_avg']:.0f}%) : {nums_str}"
-        )
+        for num in data['nums']:
+            all_entries.append((num, notation))
+
+    all_entries.sort(key=lambda x: x[0])
+    for num, notation in all_entries:
+        summary_lines.append(f"#{num}  {notation}")
+
     messages.append('\n'.join(summary_lines))
 
     return messages

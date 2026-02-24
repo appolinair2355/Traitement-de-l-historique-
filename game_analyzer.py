@@ -2,6 +2,10 @@ import re
 
 SUITS = ['♠', '♥', '♦', '♣']
 SUIT_EMOJI = {'♠': '♠️', '♥': '♥️', '♦': '♦️', '♣': '♣️'}
+FACE_CARDS = ['A', 'K', 'Q', 'J']
+
+# Regex pour capturer les cartes de face : K♦️, A♠, J♣️, Q♥, etc.
+_FACE_CARD_RE = re.compile(r'([AKQJ])(?:♠️|♥️|♦️|♣️|♠|♥|♦|♣)')
 
 # Formats supportés :
 #   ✅3(K♦️4♦️9♦️) - 1(J♦️10♥️A♠️)   → victoire joueur/banquier
@@ -20,6 +24,14 @@ NUL_FALLBACK_PATTERN = re.compile(
     r'(\d+)\(([^)]+)\).*?(\d+)\(([^)]+)\).*?#T(\d+)',
     re.UNICODE | re.DOTALL
 )
+
+
+def extract_face_cards(cards_str: str) -> set:
+    """Retourne les cartes de valeur (A, K, Q, J) présentes dans une main.
+    Ex: 'K♦️4♦️9♦️' → {'K'}
+        'J♦️10♥️A♠️' → {'J', 'A'}
+    """
+    return set(_FACE_CARD_RE.findall(cards_str))
 
 
 def extract_suits_present(cards_str):
@@ -90,6 +102,8 @@ def parse_game(text):
     cards_b = count_cards(cards_b_str)
     suits_j = extract_suits_present(cards_j_str)
     suits_b = extract_suits_present(cards_b_str)
+    face_j = extract_face_cards(cards_j_str)
+    face_b = extract_face_cards(cards_b_str)
     missing_j = sorted({'♠', '♥', '♦', '♣'} - suits_j)
     missing_b = sorted({'♠', '♥', '♦', '♣'} - suits_b)
     parite = 'PAIR' if total % 2 == 0 else 'IMPAIR'
@@ -108,6 +122,8 @@ def parse_game(text):
         'plusmoins_b': get_plusmoins(score_b),
         'missing_j': missing_j,
         'missing_b': missing_b,
+        'face_j': face_j,
+        'face_b': face_b,
         'raw': match.group(0)
     }
 
@@ -166,6 +182,8 @@ def build_category_stats(games):
         'plusmoins_b': {'Plus de 6,5': [], 'Moins de 4,5': [], 'Neutre': []},
         'missing_j': {'♠': [], '♥': [], '♦': [], '♣': []},
         'missing_b': {'♠': [], '♥': [], '♦': [], '♣': []},
+        'face_j': {'A': [], 'K': [], 'Q': [], 'J': []},
+        'face_b': {'A': [], 'K': [], 'Q': [], 'J': []},
     }
     for g in games:
         n = g['numero']
@@ -185,6 +203,12 @@ def build_category_stats(games):
         for s in g['missing_b']:
             if s in cats['missing_b']:
                 cats['missing_b'][s].append(n)
+        for fc in g.get('face_j', set()):
+            if fc in cats['face_j']:
+                cats['face_j'][fc].append(n)
+        for fc in g.get('face_b', set()):
+            if fc in cats['face_b']:
+                cats['face_b'][fc].append(n)
     return cats
 
 

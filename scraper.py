@@ -156,13 +156,14 @@ class Scraper:
             await self.client.disconnect()
 
     async def search_in_any_channel(self, channel_id: str, keywords, limit=None,
-                                     from_date=None, progress_callback=None,
-                                     cancel_check=None):
+                                     from_date=None, to_date=None,
+                                     progress_callback=None, cancel_check=None):
         """Recherche dans n'importe quel canal par son ID.
 
         Args:
             limit: Nombre max de messages à analyser (None = tout l'historique).
             from_date: datetime (UTC) — arrête dès qu'on dépasse cette date vers le passé.
+            to_date: datetime (UTC) — ignore les messages plus récents que cette date.
             cancel_check: callable() → bool — si True, interrompt la recherche.
         """
         self._make_client()
@@ -199,8 +200,11 @@ class Scraper:
                     continue
 
                 # Filtre par date : Telethon itère du plus récent au plus ancien
-                if from_date and message.date and message.date < from_date:
-                    break
+                if message.date:
+                    if to_date and message.date > to_date:
+                        continue  # Message trop récent, on le saute
+                    if from_date and message.date < from_date:
+                        break     # On est passé avant la date de début, on arrête
 
                 checked += 1
                 text_lower = message.text.lower()
@@ -220,13 +224,16 @@ class Scraper:
             await self.client.disconnect()
 
     async def get_game_records(self, channel_id: str, limit=None, from_date=None,
-                               progress_callback=None, cancel_check=None):
+                               to_date=None, progress_callback=None, cancel_check=None):
         """Récupère tous les messages au format #N... du canal donné.
 
         Args:
             limit: Nombre max de messages à parcourir (None = tout l'historique).
-            from_date: datetime (UTC) — arrête dès qu'on dépasse cette date.
+            from_date: datetime (UTC) — arrête dès qu'on dépasse cette date vers le passé.
+            to_date: datetime (UTC) — ignore les messages plus récents que cette date.
             cancel_check: callable() → bool — si True, interrompt la récupération.
+        Retourne: (records, title, cancelled)
+            records : liste de dicts {'text': str, 'date': str}
         """
         from game_analyzer import GAME_PATTERN
         self._make_client()
@@ -259,17 +266,19 @@ class Scraper:
                 if not message.text:
                     continue
 
-                if from_date and message.date and message.date < from_date:
-                    break
+                if message.date:
+                    if to_date and message.date > to_date:
+                        continue  # Message trop récent, on le saute
+                    if from_date and message.date < from_date:
+                        break     # On est passé avant la date de début, on arrête
 
                 checked += 1
                 txt = message.text
-                # Inclure si le pattern principal correspond OU si c'est un match nul
-                # reconnaissable (#N ... 🔰 ... #T) avec un format légèrement différent
+                date_str = str(message.date) if message.date else ''
                 if GAME_PATTERN.search(txt) or (
                     '🔰' in txt and '#N' in txt and '#T' in txt
                 ):
-                    records.append(txt)
+                    records.append({'text': txt, 'date': date_str})
                 if progress_callback and checked % 200 == 0:
                     await progress_callback(checked, len(records))
 
