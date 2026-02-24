@@ -38,9 +38,13 @@ from storage import (get_predictions, get_stats, clear_all, search_predictions,
                      get_analyzed_games, save_analyzed_games, clear_analyzed_games,
                      get_admins, get_admins_with_permissions, get_admin_permissions,
                      has_permission, add_admin, remove_admin, update_admin_permissions,
+                     get_predict_config, save_predict_config, set_channel_role,
+                     get_stats_channels, get_predictor_channels, reset_predict_config,
                      ALL_COMMANDS)
 from game_analyzer import (parse_game, format_analysis, build_category_stats,
                            format_ecarts, normalize_suit, SUIT_EMOJI)
+from predictor import (generate_category_list, format_category_list,
+                       build_predict_data, format_global_summary)
 from scraper import scraper
 from auth_manager import auth_manager
 from pdf_generator import generate_pdf, generate_search_pdf, generate_channel_search_pdf
@@ -111,6 +115,35 @@ _search_cancel: dict[int, bool] = {}
 # État : attend la sélection de commandes pour un nouvel admin
 # {main_admin_uid: {'target_uid': int, 'action': 'add'|'update'}}
 _waiting_for_perm: dict[int, dict] = {}
+# État : attend le choix du canal dans /helpcl
+_waiting_for_helpcl: dict[int, bool] = {}
+# État : attend la saisie des rôles dans /predictsetup
+# {uid: {'step': str, 'channels': list}}
+_waiting_for_predict: dict[int, dict] = {}
+
+
+def _clear_waits(uid: int):
+    """Efface tous les états d'attente d'un utilisateur.
+    Appelé automatiquement dès qu'une nouvelle commande est reçue,
+    pour éviter qu'un ancien état bloque le nouveau flux."""
+    _waiting_for_channel.pop(uid, None)
+    _waiting_for_game.pop(uid, None)
+    _waiting_for_perm.pop(uid, None)
+    _waiting_for_helpcl.pop(uid, None)
+    _waiting_for_predict.pop(uid, None)
+
+def _build_channel_menu(channels: list) -> str:
+    """Construit le menu numéroté des canaux pour /helpcl."""
+    lines = ["📡 <b>CANAUX CONFIGURÉS</b>\n"]
+    for i, ch in enumerate(channels, 1):
+        name = ch.get('name') or ch['id']
+        cid = ch['id']
+        date = ch.get('added_date', 'N/A')
+        mark = " ▶️" if ch.get('active') else ""
+        lines.append(f"<b>{i}.</b> {name}{mark}\n   ID : <code>{cid}</code>\n   Ajouté : {date}")
+    lines.append("\n✏️ Tapez le <b>numéro</b> du canal à utiliser pour les analyses")
+    lines.append("Tapez <b>sortir</b> pour quitter sans changer")
+    return '\n'.join(lines)
 
 def _build_cmd_menu(target_uid: int, action: str) -> str:
     """Construit le menu numéroté des commandes disponibles."""
@@ -140,41 +173,108 @@ class Handlers:
             return False
         return True
 
+    # Descriptions courtes pour chaque commande (utilisées dans /start sous-admin et /help)
+    _CMD_DESC = {
+        'sync':         'Récupérer les messages récents du canal actif',
+        'fullsync':     'Récupérer tout l\'historique du canal actif',
+        'search':       'Chercher des mots-clés et exporter en PDF',
+        'hsearch':      'Chercher dans l\'historique du canal actif',
+        'report':       'Générer un PDF de toutes les prédictions',
+        'filter':       'Filtrer par couleur ou statut',
+        'stats':        'Statistiques des prédictions stockées',
+        'clear':        'Effacer toutes les données locales',
+        'addchannel':   'Ajouter un nouveau canal',
+        'removechannel':'Supprimer un canal de la liste',
+        'channels':     'Voir tous les canaux configurés',
+        'usechannel':   'Activer un canal par ID',
+        'helpcl':       'Sélectionner le canal actif (menu numéroté)',
+        'gload':        'Charger des jeux Baccarat depuis le canal',
+        'gstats':       'Statistiques des jeux chargés',
+        'gclear':       'Effacer les jeux chargés',
+        'ganalyze':     'Analyser un enregistrement de jeu (copier-coller)',
+        'gvictoire':    'Numéros et écarts par résultat (Joueur/Banquier/Nul)',
+        'gparite':      'Numéros et écarts par parité (Pair/Impair)',
+        'gstructure':   'Structure des cartes par main (2/2, 2/3, 3/2, 3/3)',
+        'gplusmoins':   'Analyse Plus/Moins de 6.5 ou 4.5',
+        'gcostume':     'Probabilité costume par main (♠ ❤ ♦ ♣ Joueur/Banquier)',
+        'gecartmax':    'Paires ayant l\'écart maximum par catégorie',
+        'predictsetup': 'Configurer les canaux de prédiction',
+        'gpredictload': 'Charger les jeux depuis les canaux de stats',
+        'gpredict':     'Générer des prédictions par catégorie (N1 → N2)',
+        'documentation':'Guide complet avec exemples d\'utilisation',
+    }
+
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if not is_admin(update.effective_user.id):
+        uid = update.effective_user.id
+        if not is_admin(uid):
             return
 
-        connected = "✅ Connecté" if auth_manager.is_connected() else "❌ Non connecté"
+        # ── Sous-admin : afficher ses commandes autorisées ──
+        if not is_main_admin(uid):
+            perms = get_admin_permissions(uid)
+            first_name = update.effective_user.first_name or 'Admin'
+            if not perms:
+                await update.message.reply_text(
+                    f"👋 Bonjour <b>{first_name}</b> !\n\n"
+                    "❌ Aucune commande n'a encore été accordée à votre compte.\n\n"
+                    "Contactez l'administrateur principal pour obtenir vos accès.",
+                    parse_mode='HTML'
+                )
+                return
+            lines = []
+            for cmd in perms:
+                desc = self._CMD_DESC.get(cmd, '')
+                lines.append(f"  /{cmd} — {desc}" if desc else f"  /{cmd}")
+            cmds_text = '\n'.join(lines)
+            await update.message.reply_text(
+                f"👋 Bonjour <b>{first_name}</b> !\n\n"
+                "🎯 <b>Bot VIP KOUAMÉ &amp; JOKER</b>\n\n"
+                "📋 <b>Vos commandes autorisées :</b>\n\n"
+                f"{cmds_text}\n\n"
+                "💡 Tapez /documentation pour voir des exemples détaillés.\n"
+                "<i>Vos accès sont gérés par l'administrateur principal.</i>",
+                parse_mode='HTML'
+            )
+            return
+
+        # ── Administrateur principal : tableau de bord ──
         channels = get_channels()
-        active = get_active_channel()
+
+        header = "🎯 <b>Bot VIP KOUAMÉ &amp; JOKER</b>\n"
 
         if channels:
             ch_lines = []
             for ch in channels:
-                mark = "▶️" if ch.get('active') else "  "
-                name = ch.get('name') or ch['id']
-                ch_lines.append(f"{mark} {name} (`{ch['id']}`)")
-            ch_info = "\n".join(ch_lines)
-        else:
-            ch_info = "Aucun canal ajouté"
-
-        await update.message.reply_text(
-            f"🎯 *Bot VIP KOUAMÉ & JOKER*\n\n"
-            f"Status: {connected}\n"
-            f"Numéro: `{USER_PHONE}`\n\n"
-            f"📡 *Canaux configurés :*\n{ch_info}\n\n"
-            f"Tapez /help pour voir toutes les commandes organisées par domaine.",
-            parse_mode='Markdown'
-        )
-
-        # Proposer d'ajouter un canal si aucun n'est configuré
-        if not channels:
-            await update.message.reply_text(
-                "👆 Vous n'avez aucun canal de recherche configuré.\n\n"
-                "Envoyez l'ID du canal à analyser (ex: `-1001234567890`).\n"
-                "Ou tapez /addchannel pour commencer."
+                mark = "▶️" if ch.get('active') else "   "
+                name = ch.get('name') or str(ch['id'])
+                added = ch.get('added_at', '')
+                date_str = f"  <i>(ajouté le {added[:10]})</i>" if added else ''
+                ch_lines.append(f"{mark} <b>{name}</b> <code>{ch['id']}</code>{date_str}")
+            ch_block = "\n".join(ch_lines)
+            actions = (
+                "📌 <b>Que souhaitez-vous faire ?</b>\n\n"
+                "  /addchannel — Ajouter un nouveau canal\n"
+                "  /helpcl — Changer de canal actif\n"
+                "  /removechannel — Supprimer un canal\n"
+                "  /gload — Charger et analyser les jeux\n"
+                "  /help — Voir toutes les commandes"
             )
-            _waiting_for_channel[update.effective_user.id] = True
+            await update.message.reply_text(
+                f"{header}\n"
+                f"📡 <b>Canaux configurés :</b>\n{ch_block}\n\n"
+                f"{actions}",
+                parse_mode='HTML'
+            )
+        else:
+            await update.message.reply_text(
+                f"{header}\n"
+                "📡 <b>Aucun canal configuré.</b>\n\n"
+                "Pour commencer, ajoutez un canal :\n"
+                "  /addchannel — Ajouter un canal Telegram\n\n"
+                "Ou envoyez directement l'ID du canal (ex : <code>-1001234567890</code>)",
+                parse_mode='HTML'
+            )
+            _waiting_for_channel[uid] = True
     
     async def help_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/help — Liste toutes les commandes par domaine."""
@@ -184,96 +284,234 @@ class Handlers:
 
         main = is_main_admin(uid)
 
-        # Pour un sous-admin : afficher uniquement ses commandes autorisées
+        # Pour un sous-admin : afficher uniquement ses commandes autorisées avec descriptions
         if not main:
             perms = get_admin_permissions(uid)
-            cmd_lines = '\n'.join(f'• /{c}' for c in perms) if perms else '_Aucune commande accordée._'
+            if not perms:
+                await update.message.reply_text(
+                    "❌ <b>Aucune commande accordée.</b>\n\n"
+                    "Contactez l'administrateur principal pour obtenir des accès.",
+                    parse_mode='HTML'
+                )
+                return
+            lines = []
+            for cmd in perms:
+                desc = self._CMD_DESC.get(cmd, '')
+                lines.append(f"  /{cmd} — {desc}" if desc else f"  /{cmd}")
+            cmd_lines = '\n'.join(lines)
             await update.message.reply_text(
-                f"📖 <b>VOS COMMANDES AUTORISÉES</b>\n\n{cmd_lines}\n\n"
-                f"<i>Contactez l'administrateur principal pour modifier vos accès.</i>",
+                f"📖 <b>VOS COMMANDES AUTORISÉES</b>\n\n"
+                f"{cmd_lines}\n\n"
+                f"💡 Tapez /documentation pour voir les exemples d'utilisation.\n"
+                f"<i>Vos accès sont gérés par l'administrateur principal.</i>",
                 parse_mode='HTML'
             )
             return
 
         sections = []
 
-        # ── Général ──────────────────────────────────────────────────────────
         sections.append(
             "📋 <b>GÉNÉRAL</b>\n"
-            "/start — Statut du bot et canaux actifs\n"
-            "/help — Cette liste de commandes\n"
-            "/myid — Voir votre Telegram ID\n"
-            "/cancel — Annuler une recherche en cours"
+            "  /start — Statut du bot et canaux actifs\n"
+            "  /help — Cette liste de commandes\n"
+            "  /documentation — Guide complet avec exemples\n"
+            "  /myid — Afficher votre Telegram ID\n"
+            "  /cancel — Annuler toute opération en cours"
         )
 
-        # ── Connexion Telegram ────────────────────────────────────────────────
         if main:
             sections.append(
                 "🔐 <b>CONNEXION TELEGRAM</b>\n"
-                "/connect — Envoyer le code SMS d'authentification\n"
-                "/code aa12345 — Entrer le code reçu par SMS\n"
-                "/disconnect — Supprimer la session active"
+                "  /connect — Demander le code SMS d'authentification\n"
+                "  /code aa12345 — Valider le code reçu par SMS\n"
+                "  /disconnect — Supprimer la session active"
             )
 
-        # ── Données locales (canal principal) ─────────────────────────────────
         sections.append(
-            "💾 <b>DONNÉES LOCALES — CANAL PRINCIPAL</b>\n"
-            "/sync — Synchroniser les messages récents\n"
-            "/fullsync — Tout l'historique du canal principal\n"
-            "/stats — Statistiques des prédictions synchronisées\n"
-            "/report — Générer un PDF complet des prédictions\n"
-            "/search mot1 mot2 — Recherche locale (PDF)\n"
-            "/filter — Filtrer par couleur ou statut\n"
-            "📎 <i>Envoyer un PDF → extraire les numéros prédits</i>"
+            "💾 <b>DONNÉES LOCALES</b>\n"
+            "  /sync — Récupérer les messages récents du canal principal\n"
+            "  /fullsync — Récupérer tout l'historique du canal principal\n"
+            "  /stats — Statistiques des prédictions stockées\n"
+            "  /report — Générer un PDF de toutes les prédictions\n"
+            "  /search mot1 mot2 — Chercher et exporter en PDF\n"
+            "  /filter — Filtrer par couleur ou statut\n"
+            "  /clear — Effacer toutes les données locales\n"
+            "  📎 <i>Envoyer un fichier PDF → analyse automatique des numéros</i>"
         )
 
-        # ── Canaux de recherche ───────────────────────────────────────────────
         sections.append(
-            "📡 <b>CANAUX DE RECHERCHE</b>\n"
-            "/addchannel — Ajouter un canal à la liste\n"
-            "/channels — Voir et gérer les canaux\n"
-            "/usechannel -100XXX — Activer un canal\n"
-            "/removechannel -100XXX — Supprimer un canal\n"
-            "/hsearch mot1 mot2 — Rechercher dans l'historique\n"
-            "  Options : <code>limit:500</code>  <code>from:2024-06-01</code>\n"
-            "  Ex : <code>/hsearch GAGNÉ Cœur limit:1000</code>"
+            "📡 <b>GESTION DES CANAUX</b>\n"
+            "  /helpcl — Sélectionner le canal actif (menu numéroté)\n"
+            "  /addchannel — Ajouter un nouveau canal à la liste\n"
+            "  /channels — Voir tous les canaux configurés\n"
+            "  /usechannel -100XXX — Activer un canal directement par ID\n"
+            "  /removechannel -100XXX — Supprimer un canal\n"
+            "  /hsearch mots-clés — Chercher dans l'historique du canal actif\n"
+            "    ↳ Options : <code>limit:500</code>  <code>from:2024-06-01</code>"
         )
 
-        # ── Analyse de jeux Baccarat ──────────────────────────────────────────
         sections.append(
-            "🎴 <b>ANALYSE DE JEUX BACCARAT</b>\n"
-            "/gload from:AAAA-MM-JJ [HH:MM] — Charger les jeux depuis une date\n"
-            "/gload limit:N — Charger les N derniers messages\n"
-            "  Options : <code>limit:N</code>  <code>from:AAAA-MM-JJ</code>\n"
-            "/ganalyze — Analyser un enregistrement (copier-coller)\n"
-            "/gstats — Statistiques de tous les jeux chargés\n"
-            "/gclear — Effacer les jeux analysés\n"
-            "\n"
-            "<b>Recherche par catégorie :</b>\n"
-            "/gvictoire joueur|banquier|nul — Numéros et écarts\n"
-            "/gparite pair|impair — Numéros et écarts\n"
-            "/gstructure 2/2|2/3|3/2|3/3 — Structure des cartes\n"
-            "/gplusmoins j|b plus|moins — Plus/Moins par joueur\n"
-            "/gcostume ♠|♥|♦|♣ j|b — Costumes manquants\n"
-            "/gecartmax — Paires de numéros formant l'écart max (toutes catégories)"
+            "🎴 <b>ANALYSE BACCARAT</b>\n"
+            "  /gload <code>from:AAAA-MM-JJ</code> — Charger jeux à partir d'une date\n"
+            "  /gload <code>limit:N</code> — Charger les N derniers jeux\n"
+            "  /gstats — Statistiques des jeux chargés\n"
+            "  /ganalyze — Analyser un enregistrement (copier-coller)\n"
+            "  /gclear — Effacer les jeux analysés\n\n"
+            "  <b>Catégories :</b>\n"
+            "  /gvictoire joueur|banquier|nul — Écarts par résultat\n"
+            "  /gparite pair|impair — Écarts par parité du total\n"
+            "  /gstructure 2/2|2/3|3/2|3/3 — Structure des cartes\n"
+            "  /gplusmoins j|b plus|moins — Plus/Moins de 6,5 ou 4,5\n"
+            "  /gcostume ♠|♥|♦|♣ j|b — Probabilité costume par main\n"
+            "  /gecartmax — Paires avec l'écart maximum (toutes catégories)"
         )
 
-        # ── Administration ────────────────────────────────────────────────────
         if main:
             sections.append(
                 "👥 <b>ADMINISTRATION</b>\n"
-                "/addadmin USER_ID [cmd1 cmd2 ...] — Ajouter un admin avec permissions\n"
-                "/setperm USER_ID cmd1 cmd2 ... — Modifier les permissions d'un admin\n"
-                "/removeadmin USER_ID — Supprimer un administrateur\n"
-                "/admins — Liste des admins avec leurs permissions\n"
-                "/clear — Effacer toutes les données locales"
+                "  /addadmin USER_ID — Ajouter un admin (menu de sélection des commandes)\n"
+                "  /setperm USER_ID — Modifier les permissions d'un admin existant\n"
+                "  /removeadmin USER_ID — Supprimer un administrateur\n"
+                "  /admins — Voir la liste des admins et leurs permissions"
             )
 
-        header = "📖 <b>AIDE — TOUTES LES COMMANDES</b>\n\n"
-        footer = "\n\n💡 <i>Tapez /cancel à tout moment pour arrêter une recherche en cours.</i>"
-
+        header = "📖 <b>AIDE — COMMANDES DU BOT VIP KOUAMÉ</b>\n\n"
+        footer = "\n\n💡 <i>/documentation pour des exemples détaillés · /cancel pour annuler</i>"
         full_text = header + "\n\n".join(sections) + footer
         await update.message.reply_text(full_text, parse_mode='HTML')
+
+    async def documentation(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/documentation — Guide complet avec exemples pour chaque commande."""
+        uid = update.effective_user.id
+        if not is_admin(uid):
+            return
+
+        main = is_main_admin(uid)
+        perms = list(ALL_COMMANDS) if main else get_admin_permissions(uid)
+
+        parts = []
+
+        parts.append(
+            "📚 <b>DOCUMENTATION — GUIDE D'UTILISATION</b>\n"
+            "Exemples concrets pour chaque commande disponible.\n"
+        )
+
+        # ── Canaux ──────────────────────────────────────────────────────────
+        if any(c in perms for c in ['helpcl', 'addchannel', 'channels', 'usechannel']):
+            parts.append(
+                "📡 <b>GESTION DES CANAUX</b>\n\n"
+                "<b>/helpcl</b> — Menu interactif pour choisir le canal d'analyse\n"
+                "  → Le bot affiche une liste numérotée\n"
+                "  → Tapez <code>1</code> pour sélectionner le premier canal\n"
+                "  → Tapez <code>sortir</code> pour quitter sans changer\n\n"
+                "<b>/addchannel</b> — Ajouter un canal\n"
+                "  → Le bot vous demande l'ID ou @username\n"
+                "  → Ex : <code>-1001234567890</code> ou <code>@moncanal</code>\n\n"
+                "<b>/channels</b> — Voir tous les canaux enregistrés\n\n"
+                "<b>/usechannel -1001234567890</b> — Activer un canal par son ID\n\n"
+                "<b>/removechannel -1001234567890</b> — Supprimer un canal"
+            )
+
+        # ── Recherche historique ──────────────────────────────────────────────
+        if 'hsearch' in perms:
+            parts.append(
+                "🔍 <b>RECHERCHE DANS L'HISTORIQUE</b>\n\n"
+                "<b>/hsearch</b> <code>mot1 mot2</code> — Chercher des mots dans le canal actif\n"
+                "  Ex : <code>/hsearch GAGNÉ Cœur</code>\n"
+                "  Ex : <code>/hsearch PERDU limit:500</code>\n"
+                "  Ex : <code>/hsearch Prédiction from:2024-12-01</code>\n"
+                "  Ex : <code>/hsearch Numéro from:2025-01-15 10:00 limit:200</code>\n\n"
+                "  Options combinables :\n"
+                "  • <code>limit:N</code> — limiter à N messages analysés\n"
+                "  • <code>from:AAAA-MM-JJ</code> ou <code>from:AAAA-MM-JJ HH:MM</code>\n\n"
+                "  Le résultat s'exporte automatiquement en PDF."
+            )
+
+        # ── Synchronisation ───────────────────────────────────────────────────
+        if any(c in perms for c in ['sync', 'fullsync', 'search', 'report']):
+            parts.append(
+                "💾 <b>SYNCHRONISATION ET DONNÉES LOCALES</b>\n\n"
+                "<b>/sync</b> — Récupérer les nouveaux messages depuis la dernière synchro\n\n"
+                "<b>/fullsync</b> — Récupérer tout l'historique (peut être long)\n\n"
+                "<b>/stats</b> — Nombre de prédictions stockées\n\n"
+                "<b>/report</b> — Générer un PDF de toutes les prédictions\n\n"
+                "<b>/search</b> <code>Cœur GAGNÉ</code> — Chercher et exporter en PDF\n"
+                "  Options : <code>limit:N</code>  <code>from:AAAA-MM-JJ</code>\n\n"
+                "<b>📎 Envoyer un PDF au bot</b> — Il en extrait tous les numéros\n"
+                "  automatiquement et affiche la liste des prédictions trouvées."
+            )
+
+        # ── Analyse Baccarat ──────────────────────────────────────────────────
+        if any(c in perms for c in ['gload', 'gstats', 'gvictoire', 'gstructure']):
+            parts.append(
+                "🎴 <b>ANALYSE BACCARAT — CHARGEMENT</b>\n\n"
+                "<b>/gload from:2025-01-01</b> — Charger les jeux depuis le 1er janvier 2025\n"
+                "<b>/gload from:2025-02-10 08:00</b> — Depuis le 10 fév. à 8h\n"
+                "<b>/gload limit:200</b> — Charger les 200 derniers jeux\n\n"
+                "⚠️ <i>Une date ou une limite est obligatoire pour éviter\n"
+                "de scanner tout l'historique du canal.</i>\n\n"
+                "<b>/gstats</b> — Résumé statistique des jeux chargés\n"
+                "<b>/gclear</b> — Effacer les jeux chargés en mémoire\n"
+                "<b>/ganalyze</b> — Coller un enregistrement pour analyse instantanée\n"
+                "  Ex de format : <code>#N794. ✅3(K♦️4♦️9♦️) - 1(J♦️10♥️A♠️) #T4</code>"
+            )
+
+        if any(c in perms for c in ['gvictoire', 'gparite', 'gstructure', 'gplusmoins', 'gcostume', 'gecartmax']):
+            parts.append(
+                "🎴 <b>ANALYSE BACCARAT — CATÉGORIES</b>\n\n"
+                "<b>/gvictoire</b> — Tous les résultats (Joueur / Banquier / Nul)\n"
+                "<b>/gvictoire joueur</b> — Uniquement les victoires Joueur\n"
+                "<b>/gvictoire banquier</b> — Uniquement les victoires Banquier\n"
+                "<b>/gvictoire nul</b> — Uniquement les matchs nuls\n\n"
+                "<b>/gparite</b> — Résultats pair et impair\n"
+                "<b>/gparite pair</b> — Uniquement les totaux pairs\n\n"
+                "<b>/gstructure</b> — Structures 2/2, 2/3, 3/2, 3/3 + bilan Banquier 2K/3K\n"
+                "<b>/gstructure 2/3</b> — Uniquement la structure 2/3\n"
+                "  ↳ Le bilan montre aussi :\n"
+                "     • Banquier 2K = jeux où Banquier avait 2 cartes (2/2 + 3/2)\n"
+                "     • Banquier 3K = jeux où Banquier avait 3 cartes (2/3 + 3/3)\n\n"
+                "<b>/gplusmoins</b> — Plus/Moins pour Joueur et Banquier\n"
+                "<b>/gplusmoins j plus</b> — Joueur Plus de 6,5\n"
+                "<b>/gplusmoins b moins</b> — Banquier Moins de 4,5\n\n"
+                "<b>/gcostume</b> — Costumes manquants (toutes mains)\n"
+                "<b>/gcostume ♠ j</b> — Pique manquant chez le Joueur\n"
+                "<b>/gcostume ♥ b</b> — Cœur manquant chez le Banquier\n\n"
+                "<b>/gecartmax</b> — Paires de numéros formant l'écart le plus grand\n"
+                "  dans chacune des 23 catégories + bilan global permanent"
+            )
+
+        # ── Administration ────────────────────────────────────────────────────
+        if main:
+            parts.append(
+                "👥 <b>ADMINISTRATION</b>\n\n"
+                "<b>/addadmin 123456789</b> — Ajouter un admin\n"
+                "  → Le bot affiche la liste numérotée des commandes\n"
+                "  → Tapez ex : <code>1,3,5</code> ou <code>1-8,13</code>\n"
+                "  → L'admin ne verra et ne pourra utiliser que ces commandes\n\n"
+                "<b>/setperm 123456789</b> — Modifier les permissions d'un admin existant\n"
+                "  → Même menu numéroté que /addadmin\n\n"
+                "<b>/removeadmin 123456789</b> — Supprimer définitivement un admin\n\n"
+                "<b>/admins</b> — Voir tous les admins et leurs commandes autorisées\n\n"
+                "<b>/myid</b> — Afficher votre propre Telegram ID\n"
+                "  → Utile pour communiquer votre ID à l'admin principal"
+            )
+
+        # ── Astuces générales ─────────────────────────────────────────────────
+        parts.append(
+            "💡 <b>ASTUCES</b>\n\n"
+            "• /cancel — Annule n'importe quelle opération en cours\n"
+            "• Après /gload, les commandes /gvictoire, /gstructure etc. travaillent\n"
+            "  sur les jeux chargés jusqu'au prochain /gclear ou /gload\n"
+            "• Les listes de numéros (détail) s'effacent après 10 secondes\n"
+            "• Les bilans restent en permanence pour référence\n"
+            "• /helpcl est le moyen le plus rapide de changer de canal"
+        )
+
+        for i, part in enumerate(parts):
+            await update.message.reply_text(part, parse_mode='HTML')
+            if i < len(parts) - 1:
+                import asyncio as _asyncio
+                await _asyncio.sleep(0.3)
 
     async def connect(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/connect - Envoie le code SMS (supprime l'ancienne session si elle existe)"""
@@ -644,7 +882,8 @@ class Handlers:
 
     async def addchannel(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/addchannel — Demande l'ID d'un canal à ajouter."""
-        if not await self._perm(update, 'addchannel'):
+        if not is_main_admin(update.effective_user.id):
+            await update.message.reply_text("❌ Réservé à l'administrateur principal.")
             return
         _waiting_for_channel[update.effective_user.id] = True
         await update.message.reply_text(
@@ -695,9 +934,81 @@ class Handlers:
         name = active.get('name') or channel_id
         await update.message.reply_text(f"✅ Canal actif : *{html.escape(name)}* (`{channel_id}`)", parse_mode='Markdown')
 
+    async def helpcl(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/helpcl — Menu interactif de sélection du canal actif pour les analyses."""
+        if not await self._perm(update, 'helpcl'):
+            return
+        channels = get_channels()
+        if not channels:
+            await update.message.reply_text(
+                "❌ Aucun canal configuré.\nUtilisez /addchannel pour en ajouter un."
+            )
+            return
+        _waiting_for_helpcl[update.effective_user.id] = True
+        await update.message.reply_text(_build_channel_menu(channels), parse_mode='HTML')
+
+    async def handle_helpcl_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Reçoit le choix du canal dans le menu /helpcl."""
+        uid = update.effective_user.id
+        if not _waiting_for_helpcl.get(uid):
+            return
+
+        text = update.message.text.strip().lower()
+
+        if text in ('sortir', 'exit', 'quitter', '/cancel', 'cancel', 'annuler'):
+            _waiting_for_helpcl.pop(uid, None)
+            await update.message.reply_text("↩️ Sélection annulée. Canal inchangé.")
+            return
+
+        channels = get_channels()
+        if not text.isdigit() or not (1 <= int(text) <= len(channels)):
+            await update.message.reply_text(
+                f"❌ Tapez un numéro entre <b>1</b> et <b>{len(channels)}</b>, "
+                f"ou <b>sortir</b> pour annuler.",
+                parse_mode='HTML'
+            )
+            return
+
+        idx = int(text) - 1
+        chosen = channels[idx]
+        set_active_channel(chosen['id'])
+        _waiting_for_helpcl.pop(uid, None)
+        name = chosen.get('name') or chosen['id']
+
+        # Proposer des commandes adaptées selon le profil
+        if is_main_admin(uid):
+            next_cmds = (
+                "📌 <b>Que faire ensuite ?</b>\n\n"
+                "  /sync — Récupérer les messages récents\n"
+                "  /fullsync — Récupérer tout l'historique\n"
+                "  /gload — Charger les jeux Baccarat\n"
+                "  /hsearch — Chercher dans l'historique\n"
+                "  /addchannel — Ajouter un autre canal\n"
+                "  /help — Voir toutes les commandes"
+            )
+        else:
+            perms = get_admin_permissions(uid)
+            suggestions = [c for c in ('sync', 'fullsync', 'gload', 'hsearch', 'gstats') if c in perms]
+            lines = '\n'.join(f"  /{c} — {self._CMD_DESC.get(c, '')}" for c in suggestions)
+            next_cmds = (
+                f"📌 <b>Vos prochaines commandes :</b>\n\n{lines}"
+                if lines else "💡 Tapez /help pour voir vos commandes."
+            )
+
+        await update.message.reply_text(
+            f"✅ <b>Canal actif sélectionné :</b>\n\n"
+            f"<b>{html.escape(name)}</b>\n"
+            f"<code>{chosen['id']}</code>\n\n"
+            f"Toutes les analyses utiliseront ce canal.\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"{next_cmds}",
+            parse_mode='HTML'
+        )
+
     async def removechannel(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/removechannel <id> — Supprime un canal de la liste."""
-        if not await self._perm(update, 'removechannel'):
+        if not is_main_admin(update.effective_user.id):
+            await update.message.reply_text("❌ Réservé à l'administrateur principal.")
             return
         if not context.args:
             await update.message.reply_text("Usage: `/removechannel -1001234567890`", parse_mode='Markdown')
@@ -732,6 +1043,16 @@ class Handlers:
         # Annuler une saisie de permissions en attente
         if _waiting_for_perm.pop(uid, None):
             await update.message.reply_text("❌ Saisie de permissions annulée.")
+            return
+
+        # Annuler le menu helpcl
+        if _waiting_for_helpcl.pop(uid, None):
+            await update.message.reply_text("❌ Sélection de canal annulée.")
+            return
+
+        # Annuler la configuration predict
+        if _waiting_for_predict.pop(uid, None):
+            await update.message.reply_text("❌ Configuration de prédiction annulée.")
             return
 
         await update.message.reply_text("ℹ️ Aucune opération en cours à annuler.")
@@ -1175,6 +1496,11 @@ class Handlers:
             line("❤️", "3/3", s.get('3/3', [])),
             line("🖤", "2/2", s.get('2/2', [])),
             line("💚", "2/3", s.get('2/3', [])),
+            "",
+            line("👤", "Joueur 2K (2/2+2/3)", s.get('2/2', []) + s.get('2/3', [])),
+            line("👤", "Joueur 3K (3/2+3/3)", s.get('3/2', []) + s.get('3/3', [])),
+            line("🏦", "Banquier 2K (2/2+3/2)", s.get('2/2', []) + s.get('3/2', [])),
+            line("🏦", "Banquier 3K (2/3+3/3)", s.get('2/3', []) + s.get('3/3', [])),
         ]
 
         await update.message.reply_text('\n'.join(lines), parse_mode='HTML')
@@ -1269,6 +1595,16 @@ class Handlers:
             nums = cats['structure'][k]
             em = _max_ecart(nums)
             bilan_lines.append(f"🎴 Écart max {k} : {em}")
+
+        # Bilans Banquier 2K et 3K (regroupement par nb de cartes Banquier)
+        if not arg:
+            bk2 = cats['structure']['2/2'] + cats['structure']['3/2']
+            bk3 = cats['structure']['2/3'] + cats['structure']['3/3']
+            bilan_lines.append("")
+            bilan_lines.append("🏦 <b>Banquier par nombre de cartes :</b>")
+            bilan_lines.append(f"  2K (2 cartes) : {len(bk2)} jeux | Écart max : {_max_ecart(bk2)}")
+            bilan_lines.append(f"  3K (3 cartes) : {len(bk3)} jeux | Écart max : {_max_ecart(bk3)}")
+
         await update.message.reply_text('\n'.join(bilan_lines), parse_mode='HTML')
 
     async def gplusmoins(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1446,9 +1782,13 @@ class Handlers:
         await update.message.reply_text("🗑️ Jeux analysés effacés.")
 
     async def handle_text_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Routeur de texte : canal, permissions ou analyse de jeu selon l'état d'attente."""
+        """Routeur de texte : canal, helpcl, predict, permissions ou analyse de jeu."""
         uid = update.effective_user.id
-        if _waiting_for_perm.get(uid):
+        if _waiting_for_helpcl.get(uid):
+            await self.handle_helpcl_input(update, context)
+        elif _waiting_for_predict.get(uid):
+            await self.handle_predict_input(update, context)
+        elif _waiting_for_perm.get(uid):
             await self.handle_perm_input(update, context)
         elif _waiting_for_game.get(uid):
             await self.handle_game_input(update, context)
@@ -1542,6 +1882,288 @@ class Handlers:
         analysis = format_analysis(game)
         await update.message.reply_text(analysis)
 
+    # ── SYSTÈME DE PRÉDICTION ─────────────────────────────────────────────────
+
+    async def predictsetup(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/predictsetup — Configure les canaux de prédiction (rôles stats/prédicteur)."""
+        if not await self._perm(update, 'predictsetup'):
+            return
+        channels = get_channels()
+        if not channels:
+            await update.message.reply_text(
+                "❌ Aucun canal configuré.\n"
+                "Ajoutez au moins 2 canaux avec /addchannel avant de configurer les prédictions."
+            )
+            return
+        if len(channels) < 2:
+            await update.message.reply_text(
+                "⚠️ Vous n'avez qu'un seul canal configuré.\n"
+                "Le système de prédiction nécessite au moins :\n"
+                "• 1 canal <b>statistiques</b> (résultats #N)\n"
+                "• 1 canal <b>prédicteur</b> (optionnel, pour cross-analyse)\n\n"
+                "Ajoutez d'autres canaux avec /addchannel.",
+                parse_mode='HTML'
+            )
+            return
+
+        cfg = get_predict_config()
+        roles = cfg.get('channels', {})
+
+        _waiting_for_predict[update.effective_user.id] = {'channels': channels}
+
+        role_labels = {'stats': '📊 STATS', 'predictor': '🎯 PRÉDICTEUR'}
+        lines = ["🔧 <b>CONFIGURATION DES CANAUX DE PRÉDICTION</b>\n"]
+        lines.append("Assignez un rôle à chaque canal :\n")
+        for i, ch in enumerate(channels, 1):
+            name = ch.get('name') or ch['id']
+            role = roles.get(ch['id'], '—')
+            role_txt = role_labels.get(role, '❔ non assigné')
+            lines.append(f"<b>{i}.</b> {name}\n   <code>{ch['id']}</code>  →  {role_txt}")
+
+        lines.append("\n<b>Rôles disponibles :</b>")
+        lines.append("  <code>S</code> = Statistiques (canal avec résultats #N)")
+        lines.append("  <code>P</code> = Prédicteur (canal source de prédictions)")
+        lines.append("\n✏️ Tapez les assignations :")
+        lines.append("  Ex : <code>1=S 2=S 3=P</code>")
+        lines.append("  Ex : <code>1=S</code> (un seul canal stats suffit)")
+        lines.append("\nTapez <code>reset</code> pour effacer la configuration.")
+        lines.append("Tapez <code>sortir</code> pour annuler.")
+        await update.message.reply_text('\n'.join(lines), parse_mode='HTML')
+
+    async def handle_predict_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Reçoit la saisie des rôles dans /predictsetup."""
+        uid = update.effective_user.id
+        state = _waiting_for_predict.get(uid)
+        if not state:
+            return
+
+        text = update.message.text.strip().lower()
+
+        if text in ('sortir', 'exit', 'cancel', 'annuler', '/cancel'):
+            _waiting_for_predict.pop(uid, None)
+            await update.message.reply_text("↩️ Configuration annulée.")
+            return
+
+        if text == 'reset':
+            reset_predict_config()
+            _waiting_for_predict.pop(uid, None)
+            await update.message.reply_text("🗑️ Configuration de prédiction réinitialisée.")
+            return
+
+        channels = state['channels']
+        # Parser "1=S 2=P 3=S" etc.
+        role_map = {'s': 'stats', 'stats': 'stats', 'p': 'predictor', 'predicteur': 'predictor', 'predictor': 'predictor'}
+        assignments = {}
+        errors = []
+        for token in text.replace(',', ' ').split():
+            if '=' in token:
+                parts = token.split('=', 1)
+                idx_str, role_str = parts[0].strip(), parts[1].strip()
+                if not idx_str.isdigit():
+                    errors.append(f"'{token}' invalide")
+                    continue
+                idx = int(idx_str)
+                if not (1 <= idx <= len(channels)):
+                    errors.append(f"Canal {idx} n'existe pas")
+                    continue
+                role = role_map.get(role_str)
+                if not role:
+                    errors.append(f"Rôle '{role_str}' inconnu (S ou P)")
+                    continue
+                assignments[channels[idx - 1]['id']] = role
+
+        if errors:
+            await update.message.reply_text(
+                "❌ Erreurs :\n" + '\n'.join(f'  • {e}' for e in errors) +
+                "\n\nFormat : <code>1=S 2=P</code>", parse_mode='HTML'
+            )
+            return
+
+        if not assignments:
+            await update.message.reply_text(
+                "❌ Aucune assignation reconnue.\nFormat : <code>1=S 2=P</code>",
+                parse_mode='HTML'
+            )
+            return
+
+        # Sauvegarder
+        for cid, role in assignments.items():
+            set_channel_role(cid, role)
+        _waiting_for_predict.pop(uid, None)
+
+        cfg = get_predict_config()
+        roles_saved = cfg.get('channels', {})
+        role_labels = {'stats': '📊 STATS', 'predictor': '🎯 PRÉDICTEUR'}
+        lines = ["✅ <b>Configuration sauvegardée !</b>\n"]
+        for ch in channels:
+            role = roles_saved.get(ch['id'], '—')
+            role_txt = role_labels.get(role, '❔ non assigné')
+            name = ch.get('name') or ch['id']
+            lines.append(f"• {name} → {role_txt}")
+
+        stats_chs = get_stats_channels()
+        lines.append(f"\n<b>Étapes suivantes :</b>")
+        if stats_chs:
+            lines.append("1. Tapez /gpredictload pour charger les jeux des canaux statistiques")
+            lines.append("2. Tapez /gpredict N1 N2 pour générer des prédictions")
+        else:
+            lines.append("⚠️ Aucun canal STATS défini — ajoutez au moins un canal S.")
+        await update.message.reply_text('\n'.join(lines), parse_mode='HTML')
+
+    async def gpredictload(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/gpredictload — Charge les jeux depuis tous les canaux statistiques configurés."""
+        if not await self._perm(update, 'gpredictload'):
+            return
+        stats_chs = get_stats_channels()
+        if not stats_chs:
+            await update.message.reply_text(
+                "❌ Aucun canal statistiques configuré.\n"
+                "Utilisez /predictsetup d'abord pour assigner les rôles."
+            )
+            return
+
+        from config import API_ID, API_HASH, SESSION_PATH, TELETHON_SESSION_STRING
+        from telethon import TelegramClient
+        from telethon.sessions import StringSession
+        from game_analyzer import parse_game
+        import asyncio
+
+        msg = await update.message.reply_text(
+            f"⏳ Chargement des jeux depuis <b>{len(stats_chs)}</b> canal(aux) statistiques…",
+            parse_mode='HTML'
+        )
+
+        all_games = []
+        seen_nums = set()
+
+        async def _load_from_stats():
+            try:
+                session = StringSession(TELETHON_SESSION_STRING) if TELETHON_SESSION_STRING else SESSION_PATH
+                client = TelegramClient(session, API_ID, API_HASH)
+                await client.connect()
+                for cid in stats_chs:
+                    count = 0
+                    async for message in client.iter_messages(int(cid), limit=5000):
+                        if not message.text:
+                            continue
+                        game = parse_game(message.text)
+                        if game and game['numero'] not in seen_nums:
+                            seen_nums.add(game['numero'])
+                            all_games.append(game)
+                            count += 1
+                await client.disconnect()
+                all_games.sort(key=lambda g: int(g['numero']))
+                save_analyzed_games(all_games)
+                await msg.edit_text(
+                    f"✅ <b>{len(all_games)}</b> jeux chargés depuis {len(stats_chs)} canal(aux) statistiques.\n\n"
+                    f"Tapez /gpredict N1 N2 pour générer des prédictions.\n"
+                    f"Tapez /gstats pour voir le résumé.",
+                    parse_mode='HTML'
+                )
+            except Exception as e:
+                await msg.edit_text(f"❌ Erreur lors du chargement : {e}")
+
+        context.application.create_task(_load_from_stats())
+
+    async def gpredict(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/gpredict N1 N2 — Liste de prédictions par catégorie pour les jeux N1 à N2."""
+        if not await self._perm(update, 'gpredict'):
+            return
+        games = get_analyzed_games()
+        if not games:
+            await update.message.reply_text(
+                "❌ Aucun jeu chargé.\n"
+                "Tapez /gload ou /gpredictload d'abord."
+            )
+            return
+
+        args = context.args if context.args else []
+        all_nums = sorted(int(g['numero']) for g in games)
+        last_known = all_nums[-1]
+
+        from_num = to_num = None
+        if len(args) >= 2 and args[0].isdigit() and args[1].isdigit():
+            from_num = int(args[0])
+            to_num = int(args[1])
+        elif len(args) == 1 and args[0].isdigit():
+            n = int(args[0])
+            if n <= 100:
+                # Interpréter comme "les N prochains jeux"
+                from_num = last_known + 1
+                to_num = last_known + n
+            else:
+                # Interpréter comme un numéro de départ
+                from_num = n
+                to_num = n + 19
+        else:
+            await update.message.reply_text(
+                "📋 <b>Usage de /gpredict</b>\n\n"
+                "<code>/gpredict N1 N2</code> — de #N1 à #N2\n"
+                "<code>/gpredict N</code> — les N prochains jeux\n\n"
+                f"Dernier jeu connu : <b>#N{last_known}</b>\n\n"
+                f"Exemples :\n"
+                f"  <code>/gpredict {last_known+1} {last_known+50}</code>\n"
+                f"  <code>/gpredict 30</code> — les 30 prochains\n"
+                f"  <code>/gpredict 100</code> — les 100 prochains",
+                parse_mode='HTML'
+            )
+            return
+
+        if from_num > to_num:
+            from_num, to_num = to_num, from_num
+
+        nb_range = to_num - from_num + 1
+        if nb_range > 200:
+            await update.message.reply_text(
+                f"⚠️ Plage trop grande ({nb_range} jeux).\n"
+                f"Maximum : 200 jeux par appel."
+            )
+            return
+
+        msg = await update.message.reply_text(
+            f"🔮 Analyse de <b>{nb_range}</b> jeu(x) en cours…\n"
+            f"Plage : <b>#N{from_num}</b> → <b>#N{to_num}</b>",
+            parse_mode='HTML'
+        )
+
+        from datetime import datetime as _dt
+        import asyncio as _asyncio
+
+        nb_games = len(games)
+        cat_results = generate_category_list(games, from_num, to_num, min_confidence=35)
+
+        await msg.delete()
+
+        if not cat_results:
+            await update.message.reply_text(
+                "❌ Aucune prédiction trouvée pour cette plage.\n\n"
+                "Conseils :\n"
+                "• Élargissez la plage (#N plus éloignés)\n"
+                "• Chargez plus de jeux avec /gpredictload\n"
+                "• Le seuil de confiance est de 35% — les catégories analysées "
+                "ne montrent pas encore de retard significatif."
+            )
+            return
+
+        # En-tête
+        heure = _dt.now().strftime('%H:%M')
+        total_preds = sum(len(v['nums']) for v in cat_results.values())
+        header = (
+            f"🔮 <b>LISTE DE PRÉDICTIONS</b>\n"
+            f"⏰ {heure}  |  🎲 {nb_games} jeux analysés\n"
+            f"📐 Plage : <b>#N{from_num}</b> → <b>#N{to_num}</b>\n"
+            f"🎯 <b>{total_preds}</b> prédiction(s) en <b>{len(cat_results)}</b> catégorie(s)\n"
+            f"<i>Chaque numéro n'apparaît que dans une seule catégorie.</i>"
+        )
+        await update.message.reply_text(header, parse_mode='HTML')
+        await _asyncio.sleep(0.2)
+
+        # Un message par catégorie + résumé final
+        msgs = format_category_list(cat_results, nb_games, from_num, to_num)
+        for m in msgs:
+            await update.message.reply_text(m, parse_mode='HTML')
+            await _asyncio.sleep(0.3)
+
     async def clear(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await self._perm(update, 'clear'):
             return
@@ -1550,9 +2172,22 @@ class Handlers:
 
 handlers = Handlers()
 
+async def _reset_state_on_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Efface tous les états d'attente dès qu'une commande est reçue.
+    Enregistré en groupe -1 pour s'exécuter avant tous les autres handlers."""
+    if update.effective_user:
+        _clear_waits(update.effective_user.id)
+
+
 def setup_bot():
     app = Application.builder().token(BOT_TOKEN).build()
-    
+
+    # Priorité haute : efface tout état d'attente à chaque nouvelle commande
+    app.add_handler(
+        MessageHandler(filters.COMMAND, _reset_state_on_command),
+        group=-1
+    )
+
     app.add_handler(CommandHandler("start", handlers.start))
     app.add_handler(CommandHandler("connect", handlers.connect))
     app.add_handler(CommandHandler("code", handlers.code))
@@ -1570,7 +2205,12 @@ def setup_bot():
     app.add_handler(CommandHandler("channels", handlers.channels))
     app.add_handler(CommandHandler("usechannel", handlers.usechannel))
     app.add_handler(CommandHandler("removechannel", handlers.removechannel))
+    app.add_handler(CommandHandler("helpcl", handlers.helpcl))
     app.add_handler(CommandHandler("hsearch", handlers.hsearch))
+    app.add_handler(CommandHandler("documentation", handlers.documentation))
+    app.add_handler(CommandHandler("predictsetup", handlers.predictsetup))
+    app.add_handler(CommandHandler("gpredictload", handlers.gpredictload))
+    app.add_handler(CommandHandler("gpredict", handlers.gpredict))
     app.add_handler(CommandHandler("addadmin", handlers.addadmin))
     app.add_handler(CommandHandler("setperm", handlers.setperm))
     app.add_handler(CommandHandler("removeadmin", handlers.removeadmin))

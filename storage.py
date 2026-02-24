@@ -8,10 +8,16 @@ ensure_data_dir()
 # Toutes les commandes qui peuvent être accordées à un sous-admin
 ALL_COMMANDS = [
     'sync', 'fullsync', 'search', 'hsearch', 'report', 'filter', 'stats', 'clear',
-    'addchannel', 'removechannel', 'channels', 'usechannel',
+    'channels', 'usechannel', 'helpcl',
     'gload', 'gstats', 'gclear', 'ganalyze',
     'gvictoire', 'gparite', 'gstructure', 'gplusmoins', 'gcostume', 'gecartmax',
+    'predictsetup', 'gpredictload', 'gpredict',
+    'documentation',
 ]
+
+PREDICT_CONFIG_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), 'data', 'predict_config.json'
+)
 
 def load_json(filepath, default=None):
     if not os.path.exists(filepath):
@@ -103,7 +109,12 @@ def add_channel(channel_id: str, name: str = '') -> bool:
     channels = get_channels()
     if any(ch['id'] == str(channel_id) for ch in channels):
         return False
-    channels.append({'id': str(channel_id), 'name': name, 'active': len(channels) == 0})
+    channels.append({
+        'id': str(channel_id),
+        'name': name,
+        'active': len(channels) == 0,
+        'added_date': datetime.now().strftime('%Y-%m-%d %H:%M'),
+    })
     save_json(CHANNELS_FILE, channels)
     return True
 
@@ -220,3 +231,39 @@ def remove_admin(user_id: int) -> bool:
     del raw[str(user_id)]
     _save_admins_raw(raw)
     return True
+
+
+# ── Configuration de prédiction multi-canal ───────────────────────────────────
+
+def get_predict_config() -> dict:
+    """
+    Retourne la config de prédiction.
+    Format : {
+      'channels': {channel_id: 'stats'|'predictor'},
+      'configured': bool,
+    }
+    """
+    return load_json(PREDICT_CONFIG_FILE, {'channels': {}, 'configured': False})
+
+def save_predict_config(config: dict):
+    save_json(PREDICT_CONFIG_FILE, config)
+
+def set_channel_role(channel_id: str, role: str):
+    """role = 'stats' | 'predictor'."""
+    cfg = get_predict_config()
+    cfg['channels'][str(channel_id)] = role
+    cfg['configured'] = True
+    save_predict_config(cfg)
+
+def get_stats_channels() -> list:
+    """Retourne les IDs des canaux marqués 'stats'."""
+    cfg = get_predict_config()
+    return [cid for cid, role in cfg.get('channels', {}).items() if role == 'stats']
+
+def get_predictor_channels() -> list:
+    """Retourne les IDs des canaux marqués 'predictor'."""
+    cfg = get_predict_config()
+    return [cid for cid, role in cfg.get('channels', {}).items() if role == 'predictor']
+
+def reset_predict_config():
+    save_predict_config({'channels': {}, 'configured': False})
