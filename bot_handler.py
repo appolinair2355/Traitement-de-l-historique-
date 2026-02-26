@@ -198,9 +198,10 @@ def _main_menu_keyboard(is_main: bool = True) -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton("🔍 Recherche",      callback_data="menu:recherche"),
          InlineKeyboardButton("🔮 Prédiction",     callback_data="menu:prediction")],
-        [InlineKeyboardButton("📊 Statistiques",   callback_data="menu:statistiques"),
-         InlineKeyboardButton("📡 Canaux",          callback_data="menu:canaux")],
-        [InlineKeyboardButton("📚 Documentation",  callback_data="menu:doc")],
+        [InlineKeyboardButton("📊 Analyse",         callback_data="menu:analyse"),
+         InlineKeyboardButton("🔄 Cycles",          callback_data="menu:cycles")],
+        [InlineKeyboardButton("📡 Canaux",          callback_data="menu:canaux"),
+         InlineKeyboardButton("📚 Documentation",  callback_data="menu:doc")],
     ]
     if is_main:
         rows.append([InlineKeyboardButton("👥 Administration", callback_data="menu:admin")])
@@ -244,21 +245,40 @@ _MENU_SECTIONS = {
         "💡 <i>Chaque prédiction analyse les manquements par catégorie :\n"
         "V1/V2, Pa/I, costumes ♠♥♦♣, valeurs A/K/Q/Valet, structures 2K/3K</i>"
     ),
-    "statistiques": (
-        "📊 <b>STATISTIQUES</b>\n\n"
+    "analyse": (
+        "📊 <b>ANALYSE</b>\n\n"
         "<b>/gstats</b> — Résumé complet des jeux chargés\n\n"
-        "<b>/gvictoire</b> — Victoires par résultat\n"
-        "  <code>/gvictoire joueur</code>  <code>/gvictoire banquier</code>  <code>/gvictoire nul</code>\n\n"
-        "<b>/gparite</b> — Parité du total\n"
-        "  <code>/gparite pair</code>  <code>/gparite impair</code>\n\n"
-        "<b>/gstructure</b> — Structure des cartes (2/2, 2/3, 3/2, 3/3)\n"
-        "  <code>/gstructure 2/3</code>\n\n"
-        "<b>/gplusmoins</b> — Plus/Moins de 6,5 ou 4,5\n"
-        "  <code>/gplusmoins j plus</code>  <code>/gplusmoins b moins</code>\n\n"
-        "<b>/gcostume</b> — Costumes manquants par main\n"
-        "  <code>/gcostume ♠ j</code>  <code>/gcostume ♥ b</code>\n\n"
-        "<b>/gecartmax</b> — Écart maximum dans toutes les catégories\n\n"
+        "<b>Catégories d'analyse :</b>\n"
+        "  <b>/gvictoire</b> — Victoires par résultat\n"
+        "    <code>/gvictoire joueur</code>  <code>/gvictoire banquier</code>  <code>/gvictoire nul</code>\n\n"
+        "  <b>/gparite</b> — Parité du total\n"
+        "    <code>/gparite pair</code>  <code>/gparite impair</code>\n\n"
+        "  <b>/gstructure</b> — Structure des cartes\n"
+        "    <code>/gstructure 2/2</code>  <code>/gstructure 2/3</code>  <code>/gstructure 3/2</code>  <code>/gstructure 3/3</code>\n\n"
+        "  <b>/gplusmoins</b> — Plus/Moins de 6,5 ou 4,5\n"
+        "    <code>/gplusmoins j plus</code>  <code>/gplusmoins b moins</code>\n\n"
+        "  <b>/gcostume</b> — Costumes manquants par main\n"
+        "    <code>/gcostume ♠ j</code>  <code>/gcostume ♥ b</code>\n\n"
+        "  <b>/gvaleur</b> — Valeurs spéciales par costume (A♠, K♦…)\n"
+        "    <code>/gvaleur A</code>  <code>/gvaleur K joueur</code>\n\n"
+        "<b>Écarts :</b>\n"
+        "  <b>/gecartmax</b> — Écart maximum dans toutes les catégories\n\n"
         "<b>/gclear</b> — Effacer les jeux chargés"
+    ),
+    "cycles": (
+        "🔄 <b>CORRECTION DE CYCLES DE COSTUMES</b>\n\n"
+        "<b>/gcycle</b> — Vérifier un cycle prédéfini\n"
+        "  <code>/gcycle pair</code> — Tester cycle pairs (sauf ×10)\n"
+        "  <code>/gcycle impair</code> — Tester cycle impairs + ×10\n"
+        "  <code>/gcycle pair j</code> — Côté joueur seulement\n"
+        "  <code>/gcycle impair b 6-1436</code> — Plage spécifique\n\n"
+        "<b>/gcycleauto</b> — Trouver le meilleur cycle automatiquement\n"
+        "  <code>/gcycleauto</code> — Recherche complète\n"
+        "  <code>/gcycleauto j</code> — Côté joueur seulement\n"
+        "  <code>/gcycleauto b 6-1436</code> — Plage spécifique\n\n"
+        "💡 <i>La correction dresse la liste complète :\n"
+        "numéro [costume corrigé] pour chaque jeu qualifiant,\n"
+        "comme dans l'analyse PDF.</i>"
     ),
     "canaux": (
         "📡 <b>GESTION DES CANAUX</b>\n\n"
@@ -339,6 +359,9 @@ class Handlers:
         'gstructure':   'Structure des cartes par main (2/2, 2/3, 3/2, 3/3)',
         'gplusmoins':   'Analyse Plus/Moins de 6.5 ou 4.5',
         'gcostume':     'Probabilité costume par main (♠ ❤ ♦ ♣ Joueur/Banquier)',
+        'gvaleur':      'Valeurs spéciales par costume (A♠, K♦, Q♥, J♣…)',
+        'gcycle':       'Vérifier cycle de costumes sur jeux pairs (sauf ×10)',
+        'gcycleauto':   'Recherche auto du meilleur cycle + filtre de numéros',
         'gecartmax':    'Paires ayant l\'écart maximum par catégorie',
         'predictsetup': 'Configurer les canaux de prédiction',
         'gpredictload': 'Charger les jeux depuis les canaux de stats',
@@ -550,7 +573,7 @@ class Handlers:
         )
 
         sections.append(
-            "🎴 <b>ANALYSE BACCARAT</b>\n"
+            "📊 <b>ANALYSE BACCARAT</b>\n"
             "  /gload <code>from:AAAA-MM-JJ</code> — Charger jeux à partir d'une date\n"
             "  /gload <code>limit:N</code> — Charger les N derniers jeux\n"
             "  /gstats — Statistiques des jeux chargés\n"
@@ -561,8 +584,16 @@ class Handlers:
             "  /gparite pair|impair — Écarts par parité du total\n"
             "  /gstructure 2/2|2/3|3/2|3/3 — Structure des cartes\n"
             "  /gplusmoins j|b plus|moins — Plus/Moins de 6,5 ou 4,5\n"
-            "  /gcostume ♠|♥|♦|♣ j|b — Probabilité costume par main\n"
+            "  /gcostume ♠|♥|♦|♣ j|b — Costume manquant par main\n"
+            "  /gvaleur A|K|Q|J j|b — Valeurs spéciales par costume\n"
             "  /gecartmax — Paires avec l'écart maximum (toutes catégories)"
+        )
+
+        sections.append(
+            "🔄 <b>CORRECTION DE CYCLES DE COSTUMES</b>\n"
+            "  /gcycle pair|impair [j|b] [N1-N2] — Tester un cycle prédéfini\n"
+            "  /gcycleauto [j|b] [N1-N2] — Trouver le meilleur cycle auto\n\n"
+            "  <i>Génère la liste complète numéro [costume] corrigé</i>"
         )
 
         if main:
@@ -580,137 +611,30 @@ class Handlers:
         await update.message.reply_text(full_text, parse_mode='HTML')
 
     async def documentation(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """/documentation — Guide complet avec exemples pour chaque commande."""
+        """/documentation — Génère et envoie un PDF complet de documentation."""
         uid = update.effective_user.id
         if not is_admin(uid):
             return
 
         main = is_main_admin(uid)
-        perms = list(ALL_COMMANDS) if main else get_admin_permissions(uid)
+        msg = await update.message.reply_text("📚 Génération du guide PDF en cours…")
 
-        parts = []
+        try:
+            from pdf_generator import generate_documentation_pdf
+            pdf_path = generate_documentation_pdf(is_main_admin=main)
 
-        parts.append(
-            "📚 <b>DOCUMENTATION — GUIDE D'UTILISATION</b>\n"
-            "Exemples concrets pour chaque commande disponible.\n"
-        )
-
-        # ── Canaux ──────────────────────────────────────────────────────────
-        if any(c in perms for c in ['helpcl', 'addchannel', 'channels', 'usechannel']):
-            parts.append(
-                "📡 <b>GESTION DES CANAUX</b>\n\n"
-                "<b>/helpcl</b> — Menu interactif pour choisir le canal d'analyse\n"
-                "  → Le bot affiche une liste numérotée\n"
-                "  → Tapez <code>1</code> pour sélectionner le premier canal\n"
-                "  → Tapez <code>sortir</code> pour quitter sans changer\n\n"
-                "<b>/addchannel</b> — Ajouter un canal\n"
-                "  → Le bot vous demande l'ID ou @username\n"
-                "  → Ex : <code>-1001234567890</code> ou <code>@moncanal</code>\n\n"
-                "<b>/channels</b> — Voir tous les canaux enregistrés\n\n"
-                "<b>/usechannel -1001234567890</b> — Activer un canal par son ID\n\n"
-                "<b>/removechannel -1001234567890</b> — Supprimer un canal"
+            await update.message.reply_document(
+                document=open(pdf_path, 'rb'),
+                filename="Documentation_VIP_Kouame.pdf",
+                caption="📚 <b>Documentation complète</b> — toutes les commandes avec exemples détaillés",
+                parse_mode='HTML'
             )
-
-        # ── Recherche historique ──────────────────────────────────────────────
-        if 'hsearch' in perms:
-            parts.append(
-                "🔍 <b>RECHERCHE DANS L'HISTORIQUE</b>\n\n"
-                "<b>/hsearch</b> <code>mot1 mot2</code> — Chercher des mots dans le canal actif\n"
-                "  Ex : <code>/hsearch GAGNÉ Cœur</code>\n"
-                "  Ex : <code>/hsearch PERDU limit:500</code>\n"
-                "  Ex : <code>/hsearch Prédiction from:2024-12-01</code>\n"
-                "  Ex : <code>/hsearch Numéro from:2025-01-15 10:00 limit:200</code>\n\n"
-                "  Options combinables :\n"
-                "  • <code>limit:N</code> — limiter à N messages analysés\n"
-                "  • <code>from:AAAA-MM-JJ</code> ou <code>from:AAAA-MM-JJ HH:MM</code>\n\n"
-                "  Le résultat s'exporte automatiquement en PDF."
-            )
-
-        # ── Synchronisation ───────────────────────────────────────────────────
-        if any(c in perms for c in ['sync', 'fullsync', 'search', 'report']):
-            parts.append(
-                "💾 <b>SYNCHRONISATION ET DONNÉES LOCALES</b>\n\n"
-                "<b>/sync</b> — Récupérer les nouveaux messages depuis la dernière synchro\n\n"
-                "<b>/fullsync</b> — Récupérer tout l'historique (peut être long)\n\n"
-                "<b>/stats</b> — Nombre de prédictions stockées\n\n"
-                "<b>/report</b> — Générer un PDF de toutes les prédictions\n\n"
-                "<b>/search</b> <code>Cœur GAGNÉ</code> — Chercher et exporter en PDF\n"
-                "  Options : <code>limit:N</code>  <code>from:AAAA-MM-JJ</code>\n\n"
-                "<b>📎 Envoyer un PDF au bot</b> — Il en extrait tous les numéros\n"
-                "  automatiquement et affiche la liste des prédictions trouvées."
-            )
-
-        # ── Analyse Baccarat ──────────────────────────────────────────────────
-        if any(c in perms for c in ['gload', 'gstats', 'gvictoire', 'gstructure']):
-            parts.append(
-                "🎴 <b>ANALYSE BACCARAT — CHARGEMENT</b>\n\n"
-                "<b>/gload from:2025-01-01</b> — Charger les jeux depuis le 1er janvier 2025\n"
-                "<b>/gload from:2025-02-10 08:00</b> — Depuis le 10 fév. à 8h\n"
-                "<b>/gload limit:200</b> — Charger les 200 derniers jeux\n\n"
-                "⚠️ <i>Une date ou une limite est obligatoire pour éviter\n"
-                "de scanner tout l'historique du canal.</i>\n\n"
-                "<b>/gstats</b> — Résumé statistique des jeux chargés\n"
-                "<b>/gclear</b> — Effacer les jeux chargés en mémoire\n"
-                "<b>/ganalyze</b> — Coller un enregistrement pour analyse instantanée\n"
-                "  Ex de format : <code>#N794. ✅3(K♦️4♦️9♦️) - 1(J♦️10♥️A♠️) #T4</code>"
-            )
-
-        if any(c in perms for c in ['gvictoire', 'gparite', 'gstructure', 'gplusmoins', 'gcostume', 'gecartmax']):
-            parts.append(
-                "🎴 <b>ANALYSE BACCARAT — CATÉGORIES</b>\n\n"
-                "<b>/gvictoire</b> — Tous les résultats (Joueur / Banquier / Nul)\n"
-                "<b>/gvictoire joueur</b> — Uniquement les victoires Joueur\n"
-                "<b>/gvictoire banquier</b> — Uniquement les victoires Banquier\n"
-                "<b>/gvictoire nul</b> — Uniquement les matchs nuls\n\n"
-                "<b>/gparite</b> — Résultats pair et impair\n"
-                "<b>/gparite pair</b> — Uniquement les totaux pairs\n\n"
-                "<b>/gstructure</b> — Structures 2/2, 2/3, 3/2, 3/3 + bilan Banquier 2K/3K\n"
-                "<b>/gstructure 2/3</b> — Uniquement la structure 2/3\n"
-                "  ↳ Le bilan montre aussi :\n"
-                "     • Banquier 2K = jeux où Banquier avait 2 cartes (2/2 + 3/2)\n"
-                "     • Banquier 3K = jeux où Banquier avait 3 cartes (2/3 + 3/3)\n\n"
-                "<b>/gplusmoins</b> — Plus/Moins pour Joueur et Banquier\n"
-                "<b>/gplusmoins j plus</b> — Joueur Plus de 6,5\n"
-                "<b>/gplusmoins b moins</b> — Banquier Moins de 4,5\n\n"
-                "<b>/gcostume</b> — Costumes manquants (toutes mains)\n"
-                "<b>/gcostume ♠ j</b> — Pique manquant chez le Joueur\n"
-                "<b>/gcostume ♥ b</b> — Cœur manquant chez le Banquier\n\n"
-                "<b>/gecartmax</b> — Paires de numéros formant l'écart le plus grand\n"
-                "  dans chacune des 23 catégories + bilan global permanent"
-            )
-
-        # ── Administration ────────────────────────────────────────────────────
-        if main:
-            parts.append(
-                "👥 <b>ADMINISTRATION</b>\n\n"
-                "<b>/addadmin 123456789</b> — Ajouter un admin\n"
-                "  → Le bot affiche la liste numérotée des commandes\n"
-                "  → Tapez ex : <code>1,3,5</code> ou <code>1-8,13</code>\n"
-                "  → L'admin ne verra et ne pourra utiliser que ces commandes\n\n"
-                "<b>/setperm 123456789</b> — Modifier les permissions d'un admin existant\n"
-                "  → Même menu numéroté que /addadmin\n\n"
-                "<b>/removeadmin 123456789</b> — Supprimer définitivement un admin\n\n"
-                "<b>/admins</b> — Voir tous les admins et leurs commandes autorisées\n\n"
-                "<b>/myid</b> — Afficher votre propre Telegram ID\n"
-                "  → Utile pour communiquer votre ID à l'admin principal"
-            )
-
-        # ── Astuces générales ─────────────────────────────────────────────────
-        parts.append(
-            "💡 <b>ASTUCES</b>\n\n"
-            "• /cancel — Annule n'importe quelle opération en cours\n"
-            "• Après /gload, les commandes /gvictoire, /gstructure etc. travaillent\n"
-            "  sur les jeux chargés jusqu'au prochain /gclear ou /gload\n"
-            "• Les listes de numéros (détail) s'effacent après 10 secondes\n"
-            "• Les bilans restent en permanence pour référence\n"
-            "• /helpcl est le moyen le plus rapide de changer de canal"
-        )
-
-        for i, part in enumerate(parts):
-            await update.message.reply_text(part, parse_mode='HTML')
-            if i < len(parts) - 1:
-                import asyncio as _asyncio
-                await _asyncio.sleep(0.3)
+            await msg.delete()
+            import os
+            os.remove(pdf_path)
+        except Exception as e:
+            import html as _html
+            await msg.edit_text(f"❌ Erreur lors de la génération : {_html.escape(str(e))}", parse_mode='HTML')
 
     async def connect(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/connect - Envoie le code SMS (supprime l'ancienne session si elle existe)"""
@@ -844,6 +768,7 @@ class Handlers:
             await update.message.reply_text("❌ Aucune donnée. Faites /fullsync d'abord")
             return
         
+        requester_id = update.effective_chat.id
         msg = await update.message.reply_text("📄 Génération PDF...")
         
         try:
@@ -851,7 +776,7 @@ class Handlers:
             
             with open(pdf_path, 'rb') as f:
                 await context.bot.send_document(
-                    chat_id=ADMIN_ID,
+                    chat_id=requester_id,
                     document=f,
                     caption=f"✅ Rapport: {len(predictions)} prédictions"
                 )
@@ -908,6 +833,7 @@ class Handlers:
 
         keywords = list(context.args)
         bot = context.bot
+        requester_id = update.effective_chat.id
         msg = await update.message.reply_text(
             f"🔍 Recherche `{' '.join(keywords)}` lancée en arrière-plan...\n"
             "Le bot reste utilisable. Vous recevrez le PDF à la fin.",
@@ -935,7 +861,7 @@ class Handlers:
                         pdf_path = generate_channel_search_pdf(results, keywords)
                         with open(pdf_path, 'rb') as f:
                             await bot.send_document(
-                                chat_id=ADMIN_ID,
+                                chat_id=requester_id,
                                 document=f,
                                 caption=f"🔍 Recherche: {' '.join(keywords)}\n✅ {len(results)} message(s) trouvé(s)"
                             )
@@ -979,7 +905,7 @@ class Handlers:
                 pdf_path = generate_search_pdf(results, keywords)
                 with open(pdf_path, 'rb') as f:
                     await bot.send_document(
-                        chat_id=ADMIN_ID,
+                        chat_id=requester_id,
                         document=f,
                         caption=f"🔍 Recherche: {' '.join(keywords)}\n✅ {len(results)} message(s) trouvé(s)"
                     )
@@ -1180,7 +1106,7 @@ class Handlers:
                         f.write(response)
                     with open(txt_path, 'rb') as f:
                         await context.bot.send_document(
-                            chat_id=ADMIN_ID,
+                            chat_id=update.effective_chat.id,
                             document=f,
                             caption=f"Joueur 😉😌 — {unique_count} numéros extraits",
                             filename="predictions.txt"
@@ -1227,17 +1153,17 @@ class Handlers:
             )
             return
 
-        lines = ["📡 *Canaux de recherche enregistrés :*\n"]
+        lines = ["📡 <b>Canaux de recherche enregistrés :</b>\n"]
         for ch in channels:
-            mark = "▶️ *ACTIF*" if ch.get('active') else "⬜"
+            mark = "▶️ <b>ACTIF</b>" if ch.get('active') else "⬜"
             name = ch.get('name') or ch['id']
-            lines.append(f"{mark} {html.escape(name)} — `{ch['id']}`")
+            lines.append(f"{mark} {html.escape(str(name))} — <code>{ch['id']}</code>")
 
-        lines.append("\n*Pour changer de canal actif :*")
-        lines.append("`/usechannel <ID>`  ex: /usechannel -1001234567890")
-        lines.append("`/removechannel <ID>`  pour supprimer")
+        lines.append("\n<b>Pour changer de canal actif :</b>")
+        lines.append("<code>/usechannel ID</code>  ex: /usechannel -1001234567890")
+        lines.append("<code>/removechannel ID</code>  pour supprimer")
 
-        await update.message.reply_text('\n'.join(lines), parse_mode='Markdown')
+        await update.message.reply_text('\n'.join(lines), parse_mode='HTML')
 
     async def usechannel(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/usechannel <id> — Définit le canal actif pour les recherches."""
@@ -1254,7 +1180,10 @@ class Handlers:
         set_active_channel(channel_id)
         active = get_active_channel()
         name = active.get('name') or channel_id
-        await update.message.reply_text(f"✅ Canal actif : *{html.escape(name)}* (`{channel_id}`)", parse_mode='Markdown')
+        await update.message.reply_text(
+            f"✅ Canal actif : <b>{html.escape(str(name))}</b> (<code>{channel_id}</code>)",
+            parse_mode='HTML'
+        )
 
     async def helpcl(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/helpcl — Menu interactif de sélection du canal actif pour les analyses."""
@@ -1517,7 +1446,7 @@ class Handlers:
             )
             return
 
-        msg = await update.message.reply_text(f"🔄 Vérification du canal `{html.escape(text)}`...", parse_mode='Markdown')
+        msg = await update.message.reply_text(f"🔄 Vérification du canal <code>{html.escape(text)}</code>...", parse_mode='HTML')
 
         async def _do_add():
             try:
@@ -1838,7 +1767,29 @@ class Handlers:
             line("👤", "Joueur 3K (3/2+3/3)", s.get('3/2', []) + s.get('3/3', [])),
             line("🏦", "Banquier 2K (2/2+3/2)", s.get('2/2', []) + s.get('3/2', [])),
             line("🏦", "Banquier 3K (2/3+3/3)", s.get('2/3', []) + s.get('3/3', [])),
+            "",
+            "🃏 <b>Cartes de Valeur</b>",
         ]
+
+        fj = cats.get('face_j', {})
+        fb = cats.get('face_b', {})
+        for fc, label in [('A', 'As'), ('K', 'Roi'), ('Q', 'Dame'), ('J', 'Valet')]:
+            lines.append(line("👤", f"Joueur {label}", fj.get(fc, [])))
+            lines.append(line("🏦", f"Banquier {label}", fb.get(fc, [])))
+
+        lines.append("")
+        lines.append("🃏 <b>Valeurs Spéciales (par costume)</b>")
+        fsj = cats.get('face_suit_j', {})
+        fsb = cats.get('face_suit_b', {})
+        for fc, label in [('A', 'As'), ('K', 'Roi'), ('Q', 'Dame'), ('J', 'Valet')]:
+            for side_k, side_l, side_e in [('face_suit_j', 'Joueur', '👤'), ('face_suit_b', 'Banquier', '🏦')]:
+                row = []
+                sd = cats.get(side_k, {})
+                for suit in ['♠', '♥', '♦', '♣']:
+                    key = f'{fc}{suit}'
+                    t, em = _em(sd.get(key, []))
+                    row.append(f"{SUIT_EMOJI[suit]}:{em}")
+                lines.append(f"{side_e} {label} {side_l} — {' | '.join(row)}")
 
         await update.message.reply_text('\n'.join(lines), parse_mode='HTML')
 
@@ -2036,6 +1987,525 @@ class Handlers:
             # Message bilan compact séparé — conservé indéfiniment
             await update.message.reply_text(_bilan(suit), parse_mode='HTML')
 
+    async def gvaleur(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/gvaleur [A|K|Q|J] [j|b] — Valeurs spéciales par costume avec écarts."""
+        if not await self._perm(update, 'gvaleur'):
+            return
+        games = get_analyzed_games()
+        if not games:
+            await update.message.reply_text("❌ Aucun jeu chargé. Tapez /gload d'abord.")
+            return
+
+        from datetime import datetime as _dt
+
+        cats = build_category_stats(games)
+        args = [a.upper() if a.upper() in ('A', 'K', 'Q', 'J') else a.lower() for a in (context.args or [])]
+
+        face_arg = None
+        side_arg = None
+        for a in args:
+            if a in ('A', 'K', 'Q', 'J'):
+                face_arg = a
+            elif a in ('j', 'joueur'):
+                side_arg = 'face_suit_j'
+            elif a in ('b', 'banquier'):
+                side_arg = 'face_suit_b'
+
+        face_labels = {'A': 'As', 'K': 'Roi', 'Q': 'Dame', 'J': 'Valet'}
+        faces_to_show = [face_arg] if face_arg else ['A', 'K', 'Q', 'J']
+        sides = [(side_arg, 'Joueur' if 'j' in side_arg else 'Banquier')] if side_arg else [
+            ('face_suit_j', 'Joueur'), ('face_suit_b', 'Banquier')
+        ]
+
+        for fc in faces_to_show:
+            for sk, sl in sides:
+                for suit in ['♠', '♥', '♦', '♣']:
+                    key = f'{fc}{suit}'
+                    nums = cats[sk].get(key, [])
+                    if nums:
+                        label = f"🃏 {face_labels[fc]}{SUIT_EMOJI[suit]} {sl}"
+                        result = format_ecarts(nums, label)
+                        sent = await update.message.reply_text(f"```\n{result}\n```", parse_mode='Markdown')
+                        _schedule_delete(sent, delay=10)
+
+        heure = _dt.now().strftime('%H:%M')
+        nb = len(games)
+        bilan_lines = [f"🌸 <b>BILAN DES VALEURS SPÉCIALES</b> 🌸", f"⏰ {heure} | 🎲 {nb} jeux\n"]
+        for fc in faces_to_show:
+            bilan_lines.append(f"<b>🃏 {face_labels[fc]}</b>")
+            for sk, sl in sides:
+                emoji_side = '👤' if 'j' in sk else '🏦'
+                bilan_lines.append(f"  {emoji_side} {sl}")
+                for suit in ['♠', '♥', '♦', '♣']:
+                    key = f'{fc}{suit}'
+                    nums = cats[sk].get(key, [])
+                    em = _max_ecart(nums)
+                    cnt = len(nums)
+                    bilan_lines.append(f"    {SUIT_EMOJI[suit]} Écart max : <b>{em}</b>  ({cnt} apparitions)")
+        await update.message.reply_text('\n'.join(bilan_lines), parse_mode='HTML')
+
+    async def gcycle(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/gcycle pair|impair [j|b] [N1-N2] — Analyse du cycle de costumes manquants."""
+        if not await self._perm(update, 'gcycle'):
+            return
+        games = get_analyzed_games()
+        if not games:
+            await update.message.reply_text("❌ Aucun jeu chargé. Tapez /gload d'abord.")
+            return
+
+        from datetime import datetime as _dt
+        from itertools import product as _product
+
+        CYCLE_PAIR = ['♥', '♦', '♣', '♠', '♦', '♥', '♠']
+        CYCLE_IMPAIR = ['♥', '♦', '♣', '♠', '♦', '♥', '♠', '♣']
+        SUIT_TO_EMOJI = {'♠': '♠️', '♥': '❤️', '♦': '♦️', '♣': '♣️'}
+
+        args = context.args or []
+        from_num = 6
+        to_num = 1436
+        side_key = None
+        mode = None
+
+        for a in args:
+            al = a.lower()
+            if al in ('pair', 'p'):
+                mode = 'pair'
+            elif al in ('impair', 'i'):
+                mode = 'impair'
+            elif al in ('j', 'joueur'):
+                side_key = 'missing_j'
+            elif al in ('b', 'banquier'):
+                side_key = 'missing_b'
+            elif '-' in a or '_' in a:
+                parts = a.replace('_', '-').split('-')
+                if len(parts) == 2:
+                    try:
+                        from_num = int(parts[0])
+                        to_num = int(parts[1])
+                    except ValueError:
+                        pass
+
+        if not mode:
+            await update.message.reply_text(
+                "📋 <b>Usage de /gcycle</b>\n\n"
+                "<b>/gcycle pair</b> — Numéros pairs (sauf ×10)\n"
+                "  Cycle : ❤️♦️♣️♠️♦️❤️♠️ (7 éléments)\n\n"
+                "<b>/gcycle impair</b> — Numéros impairs + terminant par 0\n"
+                "  Cycle : ❤️♦️♣️♠️♦️❤️♠️♣️ (8 éléments)\n\n"
+                "Options : <code>j</code>/<code>b</code> (côté) · <code>6-1436</code> (plage)\n"
+                "Ex : <code>/gcycle pair j 6-1436</code>",
+                parse_mode='HTML'
+            )
+            return
+
+        if mode == 'pair':
+            cycle = CYCLE_PAIR
+            mode_label = "PAIR (sauf ×10)"
+            qualifying = [n for n in range(from_num, to_num + 1) if n % 2 == 0 and n % 10 != 0]
+        else:
+            cycle = CYCLE_IMPAIR
+            mode_label = "IMPAIR + ×10"
+            qualifying = [n for n in range(from_num, to_num + 1) if n % 2 != 0 or n % 10 == 0]
+
+        cycle_display = [SUIT_TO_EMOJI[s] for s in cycle]
+        cycle_len = len(cycle)
+
+        game_map = {int(g['numero']): g for g in games}
+
+        sides_to_check = [
+            (side_key, 'Joueur' if side_key == 'missing_j' else 'Banquier')
+        ] if side_key else [
+            ('missing_j', 'Joueur'), ('missing_b', 'Banquier')
+        ]
+
+        def _check_cycle(test_cycle, sk, qualifying_nums):
+            tlen = len(test_cycle)
+            m, mm, nf = 0, 0, 0
+            d_miss = []
+            for idx, n in enumerate(qualifying_nums):
+                exp = test_cycle[idx % tlen]
+                if n not in game_map:
+                    nf += 1
+                    continue
+                g = game_map[n]
+                missing = g.get(sk, [])
+                if exp in missing:
+                    m += 1
+                else:
+                    actual = ', '.join(SUIT_TO_EMOJI.get(s, s) for s in missing) if missing else 'aucun'
+                    d_miss.append(f"#{n} ❌ attendu {SUIT_TO_EMOJI[exp]}, manquant: {actual}")
+                    mm += 1
+            tot = m + mm
+            return {'matches': m, 'mismatches': mm, 'not_found': nf, 'total': tot,
+                    'pct': (m / tot * 100) if tot else 0, 'detail_miss': d_miss}
+
+        def _find_best_cycle(sk, qualifying_nums, target_len):
+            suits = ['♠', '♥', '♦', '♣']
+            actual_suits = []
+            for n in qualifying_nums:
+                if n in game_map:
+                    missing = game_map[n].get(sk, [])
+                    actual_suits.append(missing)
+                else:
+                    actual_suits.append(None)
+
+            best_cycle = None
+            best_pct = 0
+
+            for length in range(target_len - 1, target_len + 2):
+                if length < 3 or length > 12:
+                    continue
+                counts = {}
+                for idx, n in enumerate(qualifying_nums):
+                    pos = idx % length
+                    if n not in game_map:
+                        continue
+                    missing = game_map[n].get(sk, [])
+                    if pos not in counts:
+                        counts[pos] = {'♠': 0, '♥': 0, '♦': 0, '♣': 0}
+                    for s in missing:
+                        if s in counts[pos]:
+                            counts[pos][s] += 1
+
+                candidate = []
+                for pos in range(length):
+                    if pos in counts:
+                        best_s = max(counts[pos], key=lambda s: counts[pos][s])
+                        candidate.append(best_s)
+                    else:
+                        candidate.append('♠')
+
+                r = _check_cycle(candidate, sk, qualifying_nums)
+                if r['pct'] > best_pct:
+                    best_pct = r['pct']
+                    best_cycle = candidate
+
+            return best_cycle, best_pct
+
+        all_results = []
+        suggested_cycles = []
+
+        for sk, sl in sides_to_check:
+            r = _check_cycle(cycle, sk, qualifying)
+            r['side'] = sl
+            r['side_emoji'] = '👤' if 'j' in sk else '🏦'
+            all_results.append(r)
+
+            best_c, best_p = _find_best_cycle(sk, qualifying, cycle_len)
+            if best_c:
+                suggested_cycles.append({
+                    'side': sl, 'side_emoji': r['side_emoji'],
+                    'cycle': best_c, 'pct': best_p,
+                    'display': ''.join(SUIT_TO_EMOJI[s] for s in best_c),
+                    'length': len(best_c),
+                })
+
+        heure = _dt.now().strftime('%H:%M')
+        cycle_str = ''.join(cycle_display)
+
+        for r in all_results:
+            detail_lines = r['detail_miss'][:50]
+            if len(r['detail_miss']) > 50:
+                detail_lines.append(f"... et {len(r['detail_miss']) - 50} autres")
+            if detail_lines:
+                detail_text = (
+                    f"🔍 <b>Détails {r['side_emoji']} {r['side']} — Écarts au cycle</b>\n\n"
+                    + '\n'.join(detail_lines)
+                )
+                if len(detail_text) > 4000:
+                    detail_text = detail_text[:3950] + "\n... (tronqué)"
+                sent = await update.message.reply_text(detail_text, parse_mode='HTML')
+                _schedule_delete(sent, delay=15)
+
+        bilan_lines = [
+            f"🔄 <b>ANALYSE DU CYCLE DE COSTUMES — {mode_label}</b>",
+            f"⏰ {heure} | 🎲 Jeux #{from_num}→#{to_num}",
+            f"📋 Cycle testé : {cycle_str} (longueur {cycle_len})",
+            f"🔢 Numéros qualifiants : {len(qualifying)}",
+            "",
+        ]
+
+        for r in all_results:
+            bilan_lines.append(f"{r['side_emoji']} <b>{r['side']}</b>")
+            bilan_lines.append(f"  ✅ Correspondances : {r['matches']}/{r['total']} ({r['pct']:.1f}%)")
+            bilan_lines.append(f"  ❌ Écarts : {r['mismatches']}")
+            if r['not_found']:
+                bilan_lines.append(f"  ⚠️ Jeux non chargés : {r['not_found']}")
+            bilan_lines.append("")
+
+        if suggested_cycles:
+            bilan_lines.append("🧠 <b>CYCLE CORRIGÉ SUGGÉRÉ</b>")
+            bilan_lines.append("")
+            for sc in suggested_cycles:
+                bilan_lines.append(f"{sc['side_emoji']} <b>{sc['side']}</b>")
+                bilan_lines.append(f"  📋 {sc['display']} (longueur {sc['length']})")
+                bilan_lines.append(f"  ✅ Taux : <b>{sc['pct']:.1f}%</b>")
+                improvement = sc['pct'] - [r for r in all_results if r['side'] == sc['side']][0]['pct']
+                if improvement > 0:
+                    bilan_lines.append(f"  📈 Amélioration : +{improvement:.1f}%")
+                bilan_lines.append("")
+
+        await update.message.reply_text('\n'.join(bilan_lines), parse_mode='HTML')
+
+        for sc in suggested_cycles:
+            sk = 'missing_j' if 'Joueur' in sc['side'] else 'missing_b'
+            corr_cycle = sc['cycle']
+            clen = len(corr_cycle)
+            corr_lines = [f"{sc['side_emoji']} {sc['side']}", ""]
+            for idx, n in enumerate(qualifying):
+                expected_suit = corr_cycle[idx % clen]
+                emoji = SUIT_TO_EMOJI[expected_suit]
+                corr_lines.append(f"{n} [{emoji}]")
+            corr_text = '\n'.join(corr_lines)
+            if len(corr_text) > 4000:
+                import tempfile, os as _os
+                txt_path = f"/tmp/correction_{sc['side']}_{mode_label}.txt"
+                with open(txt_path, 'w', encoding='utf-8') as fout:
+                    fout.write(corr_text)
+                with open(txt_path, 'rb') as fin:
+                    await context.bot.send_document(
+                        chat_id=update.effective_chat.id,
+                        document=fin,
+                        caption=f"📋 Correction {sc['side_emoji']} {sc['side']} — {sc['display']}",
+                        filename=f"correction_{sc['side'].lower()}_{mode_label.lower()}.txt"
+                    )
+                _os.remove(txt_path)
+            else:
+                await update.message.reply_text(corr_text)
+
+    async def gcycleauto(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/gcycleauto [j|b] [N1-N2] — Recherche auto du meilleur cycle + filtre de numéros."""
+        if not await self._perm(update, 'gcycleauto'):
+            return
+        games = get_analyzed_games()
+        if not games:
+            await update.message.reply_text("❌ Aucun jeu chargé. Tapez /gload d'abord.")
+            return
+
+        from datetime import datetime as _dt
+
+        SUIT_TO_EMOJI = {'♠': '♠️', '♥': '❤️', '♦': '♦️', '♣': '♣️'}
+        SUITS = ['♠', '♥', '♦', '♣']
+
+        args = context.args or []
+        from_num = 6
+        to_num = 1436
+        side_key = None
+
+        for a in args:
+            al = a.lower()
+            if al in ('j', 'joueur'):
+                side_key = 'missing_j'
+            elif al in ('b', 'banquier'):
+                side_key = 'missing_b'
+            elif '-' in a or '_' in a:
+                parts = a.replace('_', '-').split('-')
+                if len(parts) == 2:
+                    try:
+                        from_num = int(parts[0])
+                        to_num = int(parts[1])
+                    except ValueError:
+                        pass
+
+        msg = await update.message.reply_text(
+            "🔬 <b>Recherche du meilleur cycle en cours…</b>\n"
+            "Analyse de toutes les combinaisons de filtres et longueurs.",
+            parse_mode='HTML'
+        )
+
+        game_map = {int(g['numero']): g for g in games}
+        all_nums = sorted(n for n in range(from_num, to_num + 1) if n in game_map)
+
+        FILTERS = {
+            'Tous les numéros':          lambda n: True,
+            'Pairs (sauf ×10)':          lambda n: n % 2 == 0 and n % 10 != 0,
+            'Impairs + ×10':             lambda n: n % 2 != 0 or n % 10 == 0,
+            'Pairs uniquement':          lambda n: n % 2 == 0,
+            'Impairs uniquement':        lambda n: n % 2 != 0,
+            'Sauf ×10':                  lambda n: n % 10 != 0,
+            'Sauf ×5':                   lambda n: n % 5 != 0,
+            'Terminant par 2,4,6,8':     lambda n: n % 2 == 0 and n % 10 != 0,
+            'Terminant par 1,3,7,9':     lambda n: n % 10 in (1,3,7,9),
+            'Terminant par 2,8':         lambda n: n % 10 in (2,8),
+            'Terminant par 4,6':         lambda n: n % 10 in (4,6),
+            'Terminant par 1,3,5,7,9':   lambda n: n % 2 != 0,
+            'Sauf ×3':                   lambda n: n % 3 != 0,
+            'Multiple de 3 sauf ×10':    lambda n: n % 3 == 0 and n % 10 != 0,
+        }
+
+        sides_to_check = [
+            (side_key, 'Joueur' if side_key == 'missing_j' else 'Banquier')
+        ] if side_key else [
+            ('missing_j', 'Joueur'), ('missing_b', 'Banquier')
+        ]
+
+        def _build_best_cycle(sk, nums, length):
+            counts = {}
+            for idx, n in enumerate(nums):
+                pos = idx % length
+                if n not in game_map:
+                    continue
+                missing = game_map[n].get(sk, [])
+                if pos not in counts:
+                    counts[pos] = {s: 0 for s in SUITS}
+                for s in missing:
+                    if s in counts[pos]:
+                        counts[pos][s] += 1
+            cycle = []
+            for pos in range(length):
+                if pos in counts and any(counts[pos][s] > 0 for s in SUITS):
+                    cycle.append(max(counts[pos], key=lambda s: counts[pos][s]))
+                else:
+                    cycle.append('♠')
+            return cycle
+
+        def _score_cycle(cycle, sk, nums):
+            clen = len(cycle)
+            m, tot = 0, 0
+            for idx, n in enumerate(nums):
+                if n not in game_map:
+                    continue
+                missing = game_map[n].get(sk, [])
+                tot += 1
+                if cycle[idx % clen] in missing:
+                    m += 1
+            return m, tot
+
+        top_results = []
+
+        for sk, sl in sides_to_check:
+            side_best = []
+            for filter_name, filter_fn in FILTERS.items():
+                filtered = [n for n in all_nums if filter_fn(n)]
+                if len(filtered) < 20:
+                    continue
+
+                for length in range(5, 13):
+                    best_cycle = _build_best_cycle(sk, filtered, length)
+                    m, tot = _score_cycle(best_cycle, sk, filtered)
+                    if tot == 0:
+                        continue
+                    pct = m / tot * 100
+                    side_best.append({
+                        'filter': filter_name,
+                        'length': length,
+                        'cycle': best_cycle,
+                        'matches': m,
+                        'total': tot,
+                        'pct': pct,
+                        'display': ''.join(SUIT_TO_EMOJI[s] for s in best_cycle),
+                        'side': sl,
+                        'side_emoji': '👤' if 'j' in sk else '🏦',
+                        'side_key': sk,
+                        'nums': filtered,
+                    })
+
+            side_best.sort(key=lambda x: -x['pct'])
+            seen_filters = set()
+            for r in side_best:
+                if r['filter'] not in seen_filters and len(top_results) < 10:
+                    seen_filters.add(r['filter'])
+                    top_results.append(r)
+                if len(seen_filters) >= 5:
+                    break
+
+        top_results.sort(key=lambda x: -x['pct'])
+
+        heure = _dt.now().strftime('%H:%M')
+        bilan_lines = [
+            f"🔬 <b>RECHERCHE AUTOMATIQUE DU MEILLEUR CYCLE</b>",
+            f"⏰ {heure} | 🎲 Jeux #{from_num}→#{to_num}",
+            f"🔢 Jeux disponibles : {len(all_nums)}",
+            f"🧪 {len(FILTERS)} filtres × 8 longueurs testés",
+            "",
+        ]
+
+        if not top_results:
+            bilan_lines.append("❌ Aucune combinaison trouvée.")
+        else:
+            bilan_lines.append("🏆 <b>TOP RÉSULTATS</b>")
+            bilan_lines.append("")
+
+            for rank, r in enumerate(top_results[:5], 1):
+                medal = {1: '🥇', 2: '🥈', 3: '🥉'}.get(rank, f'{rank}.')
+                bilan_lines.append(f"{medal} {r['side_emoji']} <b>{r['side']}</b> — {r['filter']}")
+                bilan_lines.append(f"   📋 Cycle : {r['display']} (longueur {r['length']})")
+                bilan_lines.append(f"   ✅ <b>{r['pct']:.1f}%</b> ({r['matches']}/{r['total']} jeux)")
+
+                sample = r['nums'][:8]
+                sample_str = ', '.join(f'#{n}' for n in sample)
+                num_count = len(r['nums'])
+                if num_count > 8:
+                    sample_str += f'… ({num_count} total)'
+                bilan_lines.append(f"   🔢 Numéros : {sample_str}")
+                bilan_lines.append("")
+
+        best = top_results[0] if top_results else None
+        if best:
+            bilan_lines.append("━━━━━━━━━━━━━━━━━━")
+            bilan_lines.append(f"💡 <b>MEILLEUR CYCLE TROUVÉ</b>")
+            bilan_lines.append(f"   {best['side_emoji']} {best['side']} — {best['filter']}")
+            bilan_lines.append(f"   📋 <b>{best['display']}</b> (longueur {best['length']})")
+            bilan_lines.append(f"   ✅ Taux : <b>{best['pct']:.1f}%</b>")
+            bilan_lines.append("")
+
+            detail_miss = []
+            clen = len(best['cycle'])
+            for idx, n in enumerate(best['nums']):
+                if n not in game_map:
+                    continue
+                missing = game_map[n].get(best['side_key'], [])
+                exp = best['cycle'][idx % clen]
+                if exp not in missing:
+                    actual = ', '.join(SUIT_TO_EMOJI.get(s, s) for s in missing) if missing else 'aucun'
+                    detail_miss.append(f"#{n} ❌ attendu {SUIT_TO_EMOJI[exp]}, manquant: {actual}")
+            if detail_miss:
+                detail_lines = detail_miss[:40]
+                if len(detail_miss) > 40:
+                    detail_lines.append(f"... et {len(detail_miss) - 40} autres")
+                detail_text = (
+                    f"🔍 <b>Écarts au meilleur cycle — {best['side_emoji']} {best['side']}</b>\n"
+                    f"📋 {best['display']} | {best['filter']}\n\n"
+                    + '\n'.join(detail_lines)
+                )
+                if len(detail_text) > 4000:
+                    detail_text = detail_text[:3950] + "\n... (tronqué)"
+                sent = await update.message.reply_text(detail_text, parse_mode='HTML')
+                _schedule_delete(sent, delay=20)
+
+        try:
+            await msg.delete()
+        except Exception:
+            pass
+        await update.message.reply_text('\n'.join(bilan_lines), parse_mode='HTML')
+
+        if best:
+            corr_cycle = best['cycle']
+            clen = len(corr_cycle)
+            best_nums = best['nums']
+            corr_lines = [f"{best['side_emoji']} {best['side']} — {best['filter']}", ""]
+            for idx, n in enumerate(best_nums):
+                expected_suit = corr_cycle[idx % clen]
+                emoji = SUIT_TO_EMOJI[expected_suit]
+                corr_lines.append(f"{n} [{emoji}]")
+            corr_text = '\n'.join(corr_lines)
+            if len(corr_text) > 4000:
+                import os as _os
+                side_name = best['side'].lower().replace(' ', '_')
+                txt_path = f"/tmp/correction_auto_{side_name}.txt"
+                with open(txt_path, 'w', encoding='utf-8') as fout:
+                    fout.write(corr_text)
+                with open(txt_path, 'rb') as fin:
+                    await context.bot.send_document(
+                        chat_id=update.effective_chat.id,
+                        document=fin,
+                        caption=f"📋 Correction {best['side_emoji']} {best['side']} — {best['display']} | {best['filter']}",
+                        filename=f"correction_{side_name}.txt"
+                    )
+                _os.remove(txt_path)
+            else:
+                await update.message.reply_text(corr_text)
+
     async def gecartmax(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/gecartmax — Paires de numéros formant l'écart max par catégorie + bilan global."""
         if not await self._perm(update, 'gecartmax'):
@@ -2083,7 +2553,23 @@ class Handlers:
             ("♥️ Manquant Banquier ♥",     cats['missing_b']['♥']),
             ("♦️ Manquant Banquier ♦",     cats['missing_b']['♦']),
             ("♣️ Manquant Banquier ♣",     cats['missing_b']['♣']),
+            ("🃏 Joueur As",               cats.get('face_j', {}).get('A', [])),
+            ("🃏 Joueur Roi",              cats.get('face_j', {}).get('K', [])),
+            ("🃏 Joueur Dame",             cats.get('face_j', {}).get('Q', [])),
+            ("🃏 Joueur Valet",            cats.get('face_j', {}).get('J', [])),
+            ("🃏 Banquier As",             cats.get('face_b', {}).get('A', [])),
+            ("🃏 Banquier Roi",            cats.get('face_b', {}).get('K', [])),
+            ("🃏 Banquier Dame",           cats.get('face_b', {}).get('Q', [])),
+            ("🃏 Banquier Valet",          cats.get('face_b', {}).get('J', [])),
         ]
+        face_labels = {'A': 'As', 'K': 'Roi', 'Q': 'Dame', 'J': 'Valet'}
+        fsj = cats.get('face_suit_j', {})
+        fsb = cats.get('face_suit_b', {})
+        for fc in ['A', 'K', 'Q', 'J']:
+            for suit in ['♠', '♥', '♦', '♣']:
+                key = f'{fc}{suit}'
+                all_categories.append((f"🃏 {face_labels[fc]}{SUIT_EMOJI[suit]} Joueur", fsj.get(key, [])))
+                all_categories.append((f"🃏 {face_labels[fc]}{SUIT_EMOJI[suit]} Banquier", fsb.get(key, [])))
 
         detail_lines = ["🔍 <b>PAIRES D'ÉCART MAXIMUM PAR CATÉGORIE</b>\n"]
         bilan_lines = []
@@ -2578,6 +3064,9 @@ def setup_bot():
     app.add_handler(CommandHandler("gstructure", handlers.gstructure))
     app.add_handler(CommandHandler("gplusmoins", handlers.gplusmoins))
     app.add_handler(CommandHandler("gcostume", handlers.gcostume))
+    app.add_handler(CommandHandler("gvaleur", handlers.gvaleur))
+    app.add_handler(CommandHandler("gcycle", handlers.gcycle))
+    app.add_handler(CommandHandler("gcycleauto", handlers.gcycleauto))
     app.add_handler(CommandHandler("gecartmax", handlers.gecartmax))
     app.add_handler(CommandHandler("gclear", handlers.gclear))
     app.add_handler(MessageHandler(filters.Document.PDF, handlers.handle_pdf))

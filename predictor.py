@@ -93,7 +93,7 @@ def _all_categories(cats: dict) -> dict:
     j3k = cats['structure']['3/2'] + cats['structure']['3/3']
     b2k = cats['structure']['2/2'] + cats['structure']['3/2']
     b3k = cats['structure']['2/3'] + cats['structure']['3/3']
-    return {
+    d = {
         '🏆 Victoire Joueur':    cats['victoire']['JOUEUR'],
         '🏆 Victoire Banquier':  cats['victoire']['BANQUIER'],
         '🤝 Match Nul':          cats['victoire']['NUL'],
@@ -130,6 +130,17 @@ def _all_categories(cats: dict) -> dict:
         '🎴 Q Banquier':         cats['face_b']['Q'],
         '🎴 Valet Banquier':     cats['face_b']['J'],
     }
+    fsj = cats.get('face_suit_j', {})
+    fsb = cats.get('face_suit_b', {})
+    face_labels = {'A': 'As', 'K': 'Roi', 'Q': 'Dame', 'J': 'Valet'}
+    for fc in ['A', 'K', 'Q', 'J']:
+        for s in ['♠', '♥', '♦', '♣']:
+            key = f'{fc}{s}'
+            lbl = face_labels[fc]
+            suit_e = {'♠': '♠️', '♥': '♥️', '♦': '♦️', '♣': '♣️'}[s]
+            d[f'🃏 {lbl}{suit_e} Joueur'] = fsj.get(key, [])
+            d[f'🎴 {lbl}{suit_e} Banquier'] = fsb.get(key, [])
+    return d
 
 
 def build_predict_data(games: list) -> dict:
@@ -266,6 +277,12 @@ def generate_category_list(games: list, from_num: int, to_num: int,
         '🎴 Q Banquier':         '🎴',
         '🎴 Valet Banquier':     '🎴',
     }
+    _fl = {'A': 'As', 'K': 'Roi', 'Q': 'Dame', 'J': 'Valet'}
+    _se = {'♠': '♠️', '♥': '♥️', '♦': '♦️', '♣': '♣️'}
+    for _fc in ['A', 'K', 'Q', 'J']:
+        for _s in ['♠', '♥', '♦', '♣']:
+            EMOJI_MAP[f'🃏 {_fl[_fc]}{_se[_s]} Joueur'] = '🃏'
+            EMOJI_MAP[f'🎴 {_fl[_fc]}{_se[_s]} Banquier'] = '🎴'
 
     NOTATION_MAP = {
         '🏆 Victoire Joueur':    'V1',
@@ -304,6 +321,12 @@ def generate_category_list(games: list, from_num: int, to_num: int,
         '🎴 Q Banquier':         'Banquier valeur Q',
         '🎴 Valet Banquier':     'Banquier valeur Valet',
     }
+    _fl2 = {'A': 'As', 'K': 'Roi', 'Q': 'Dame', 'J': 'Valet'}
+    _se2 = {'♠': '♠️', '♥': '♥️', '♦': '♦️', '♣': '♣️'}
+    for _fc2 in ['A', 'K', 'Q', 'J']:
+        for _s2 in ['♠', '♥', '♦', '♣']:
+            NOTATION_MAP[f'🃏 {_fl2[_fc2]}{_se2[_s2]} Joueur'] = f'Joueur {_fc2}{_se2[_s2]}'
+            NOTATION_MAP[f'🎴 {_fl2[_fc2]}{_se2[_s2]} Banquier'] = f'Banquier {_fc2}{_se2[_s2]}'
 
     # Catégories exclues des prédictions (non pertinentes pour le joueur)
     EXCLUDED_CATS = {'↔️ Joueur Neutre', '↔️ Banquier Neutre'}

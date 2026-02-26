@@ -11,8 +11,9 @@ ALL_COMMANDS = [
     'channels', 'usechannel', 'helpcl',
     'gload', 'gstats', 'gclear', 'ganalyze',
     'gvictoire', 'gparite', 'gstructure', 'gplusmoins', 'gcostume', 'gecartmax',
+    'gvaleur', 'gcycle', 'gcycleauto',
     'predictsetup', 'gpredictload', 'gpredict',
-    'documentation',
+    'searchcard', 'documentation',
 ]
 
 PREDICT_CONFIG_FILE = os.path.join(
