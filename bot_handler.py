@@ -41,7 +41,7 @@ from storage import (get_predictions, get_stats, clear_all, search_predictions,
                      has_permission, add_admin, remove_admin, update_admin_permissions,
                      get_predict_config, save_predict_config, set_channel_role,
                      get_stats_channels, get_predictor_channels, reset_predict_config,
-                     ALL_COMMANDS)
+                     reset_all_data, ALL_COMMANDS)
 from game_analyzer import (parse_game, format_analysis, build_category_stats,
                            format_ecarts, normalize_suit, SUIT_EMOJI)
 from predictor import (generate_category_list, format_category_list,
@@ -345,6 +345,7 @@ class Handlers:
         'filter':       'Filtrer par couleur ou statut',
         'stats':        'Statistiques des prédictions stockées',
         'clear':        'Effacer toutes les données locales',
+        'reset':        'FORCE RESET : Efface tout sauf la session',
         'addchannel':   'Ajouter un nouveau canal',
         'removechannel':'Supprimer un canal de la liste',
         'channels':     'Voir tous les canaux configurés',
@@ -370,6 +371,12 @@ class Handlers:
         'documentation':'Guide complet avec exemples d\'utilisation',
     }
 
+    def _back_keyboard(self):
+        """Bouton de retour au menu principal."""
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 Menu principal", callback_data="menu:accueil")]
+        ])
+
     async def handle_menu_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Gestion des boutons inline du menu."""
         query = update.callback_query
@@ -381,37 +388,52 @@ class Handlers:
 
         data = query.data  # ex: "menu:recherche"
         section = data.split(":", 1)[1] if ":" in data else ""
-        main = is_main_admin(uid)
-
+        
         if section == "accueil":
-            channels = get_channels()
-            ch_lines = []
-            for ch in channels:
-                mark = "▶️" if ch.get('active') else "○"
-                name = ch.get('name') or str(ch['id'])
-                ch_lines.append(f"  {mark} <b>{name}</b>")
-            ch_block = ("\n".join(ch_lines)) if ch_lines else "  <i>Aucun canal configuré</i>"
-            text = (
-                "🎯 <b>Bot VIP KOUAMÉ &amp; JOKER</b>\n\n"
-                f"📡 <b>Canaux :</b>\n{ch_block}\n\n"
-                "Choisissez une section :"
-            )
-            await query.edit_message_text(text, parse_mode='HTML',
-                                          reply_markup=_main_menu_keyboard(main))
+            await self.menu(update, context)
+            return
+
+        # Vider les états d'attente lors de la navigation
+        _clear_waits(uid)
+
+        if section == "recherche":
+            text = _MENU_SECTIONS["recherche"]
+            await query.edit_message_text(text, parse_mode='HTML', reply_markup=self._back_keyboard())
+            return
+        elif section == "prediction":
+            text = _MENU_SECTIONS["prediction"]
+            await query.edit_message_text(text, parse_mode='HTML', reply_markup=self._back_keyboard())
+            return
+        elif section == "analyse":
+            text = _MENU_SECTIONS["analyse"]
+            await query.edit_message_text(text, parse_mode='HTML', reply_markup=self._back_keyboard())
+            return
+        elif section == "cycles":
+            text = _MENU_SECTIONS["cycles"]
+            await query.edit_message_text(text, parse_mode='HTML', reply_markup=self._back_keyboard())
+            return
+        elif section == "canaux":
+            text = _MENU_SECTIONS["canaux"]
+            await query.edit_message_text(text, parse_mode='HTML', reply_markup=self._back_keyboard())
+            return
+        elif section == "doc":
+            text = _MENU_SECTIONS["doc"]
+            await query.edit_message_text(text, parse_mode='HTML', reply_markup=self._back_keyboard())
+            return
+        elif section == "admin":
+            if not is_main_admin(uid):
+                await query.answer("❌ Réservé à l'administrateur principal.")
+                return
+            await self.admin_menu(update, context)
             return
 
         if section not in _MENU_SECTIONS:
             await query.answer("Section inconnue.")
             return
 
-        # Filtrer le contenu admin pour les sous-admins
-        if section == "admin" and not main:
-            await query.answer("❌ Réservé à l'administrateur principal.")
-            return
-
         text = _MENU_SECTIONS[section]
         await query.edit_message_text(text, parse_mode='HTML',
-                                      reply_markup=_back_keyboard())
+                                      reply_markup=self._back_keyboard())
 
     async def menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/menu — Affiche le menu principal avec les sections de commandes."""
@@ -2059,7 +2081,12 @@ class Handlers:
         CYCLE_PAIR = ['♥', '♦', '♣', '♠', '♦', '♥', '♠']
         CYCLE_IMPAIR = ['♥', '♦', '♣', '♠', '♦', '♥', '♠', '♣']
         SUIT_TO_EMOJI = {'♠': '♠️', '♥': '❤️', '♦': '♦️', '♣': '♣️'}
-
+        # Variation selectors for suits
+        EMOJI_TO_SUIT = {
+            '♠️': '♠', '❤️': '♥', '♦️': '♦', '♣️': '♣',
+            '♠': '♠', '♥': '♥', '♦': '♦', '♣': '♣'
+        }
+        
         args = context.args or []
         from_num = 6
         to_num = 1436
@@ -2084,6 +2111,9 @@ class Handlers:
                         to_num = int(parts[1])
                     except ValueError:
                         pass
+            elif a in EMOJI_TO_SUIT or (len(a) > 1 and a[:2] in EMOJI_TO_SUIT):
+                # If someone passes a suit emoji as an argument, we could handle it
+                pass
 
         if not mode:
             await update.message.reply_text(
@@ -3000,6 +3030,17 @@ class Handlers:
         for m in msgs:
             await update.message.reply_text(m, parse_mode='HTML')
             await _asyncio.sleep(0.3)
+
+    async def reset(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/reset — Force l'effacement de toutes les données sauf la session."""
+        if not await self._perm(update, 'reset'): return
+        
+        msg = await update.message.reply_text("⏳ Réinitialisation forcée en cours...")
+        try:
+            reset_all_data()
+            await msg.edit_text("✅ Toutes les données (canaux, recherches, prédictions, jeux) ont été effacées.\n\nLa session est conservée.")
+        except Exception as e:
+            await msg.edit_text(f"❌ Erreur lors du reset : {e}")
 
     async def clear(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await self._perm(update, 'clear'):

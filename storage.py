@@ -13,7 +13,7 @@ ALL_COMMANDS = [
     'gvictoire', 'gparite', 'gstructure', 'gplusmoins', 'gcostume', 'gecartmax',
     'gvaleur', 'gcycle', 'gcycleauto',
     'predictsetup', 'gpredictload', 'gpredict',
-    'searchcard', 'documentation',
+    'searchcard', 'documentation', 'reset',
 ]
 
 PREDICT_CONFIG_FILE = os.path.join(
@@ -98,8 +98,52 @@ def search_predictions(keywords):
     return results
 
 def clear_all():
-    save_json(PREDICTIONS_FILE, [])
-    save_json(LAST_SYNC_FILE, {'last_message_id': 0})
+    # Liste des fichiers à vider (JSON)
+    files_to_reset = [
+        PREDICTIONS_FILE,
+        LAST_SYNC_FILE,
+        CHANNELS_FILE,
+        GAMES_FILE,
+        PREDICT_CONFIG_FILE
+    ]
+    
+    for filepath in files_to_reset:
+        if filepath == LAST_SYNC_FILE:
+            save_json(filepath, {'last_message_id': 0})
+        elif filepath == PREDICT_CONFIG_FILE:
+            save_json(filepath, {'channels': {}, 'configured': False})
+        else:
+            save_json(filepath, [])
+            
+    # Si d'autres fichiers de données existent dans le dossier data, on les nettoie
+    data_dir = os.path.dirname(PREDICTIONS_FILE)
+    if os.path.exists(data_dir):
+        for f in os.listdir(data_dir):
+            # On ne touche pas à la session Telethon ni à l'auth
+            if f in ['telethon_session.session', 'auth_state.json', 'session_string.txt']:
+                continue
+            if f.endswith('.json') or f.endswith('.txt') or f.endswith('.pdf'):
+                try:
+                    os.remove(os.path.join(data_dir, f))
+                except:
+                    pass
+
+def reset_all_data():
+    """Efface absolument tout sauf la session enregistrée."""
+    clear_all()
+    # On s'assure que même les fichiers non listés dans clear_all sont partis
+    data_dir = os.path.dirname(PREDICTIONS_FILE)
+    for f in os.listdir(data_dir):
+        if f not in ['telethon_session.session', 'auth_state.json', 'session_string.txt']:
+            try:
+                path = os.path.join(data_dir, f)
+                if os.path.isfile(path):
+                    os.remove(path)
+                elif os.path.isdir(path):
+                    import shutil
+                    shutil.rmtree(path)
+            except:
+                pass
 
 # ── Gestion des canaux de recherche ──────────────────────────────────────────
 
