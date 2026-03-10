@@ -31,9 +31,11 @@ def _ecart_stats(positions: list, last_known: int) -> dict:
         avg_ecart = sum(ecarts) / len(ecarts)
         max_ecart = max(ecarts)
     else:
-        avg_ecart = float(last_known) / count if count else 0.0
-        max_ecart = int(avg_ecart)
         ecarts = []
+        last_pos_single = sp[0]
+        current_ecart_single = last_known - last_pos_single
+        avg_ecart = float(last_pos_single) if last_pos_single > 0 else float(last_known)
+        max_ecart = max(current_ecart_single, 1)
     last_pos = sp[-1]
     current_ecart = last_known - last_pos
     return {
@@ -334,6 +336,7 @@ def generate_category_list(games: list, from_num: int, to_num: int,
     # ─── Étape 1 : candidats par catégorie depuis analyse des manquements ───────
     # {cat_name: {game_num: confidence}}
     cat_candidates: dict[str, dict[int, int]] = {}
+    cat_ecart_stats: dict[str, dict] = {}
 
     for cat_name, data in pd.items():
         if cat_name in EXCLUDED_CATS:
@@ -380,6 +383,16 @@ def generate_category_list(games: list, from_num: int, to_num: int,
         # Bonus retard extrême : si la catégorie dépasse son propre écart max, priorité absolue
         extreme_overdue = current_ecart > max_ecart
         extreme_bonus = min(35, int((current_ecart - max_ecart) * 3)) if extreme_overdue else 0
+
+        cat_ecart_stats[cat_name] = {
+            'avg_ecart': round(avg_ecart, 1),
+            'current_ecart': current_ecart,
+            'last_occ': last_occ,
+            'overdue_ratio': round(overdue_ratio, 2),
+            'max_ecart': int(max_ecart),
+            'freq_pct': round(freq * 100, 1),
+            'extreme_overdue': extreme_overdue,
+        }
 
         # Plancher de confiance : seulement pour les catégories avec peu de données
         # (évite que les catégories fréquentes dominent via floor artificiel)
@@ -468,23 +481,68 @@ def generate_category_list(games: list, from_num: int, to_num: int,
     for cat_name, preds in cat_groups.items():
         nums = [g for g, _ in preds]
         conf_avg = sum(c for _, c in preds) / len(preds)
+        es = cat_ecart_stats.get(cat_name, {})
         result[cat_name] = {
             'nums': sorted(nums),
+            'conf': {g: c for g, c in preds},
             'conf_avg': round(conf_avg, 1),
             'emoji': EMOJI_MAP.get(cat_name, '🎯'),
             'notation': NOTATION_MAP.get(cat_name, cat_name.split()[-1]),
+            'avg_ecart': es.get('avg_ecart', 0),
+            'current_ecart': es.get('current_ecart', 0),
+            'last_occ': es.get('last_occ', 0),
+            'overdue_ratio': es.get('overdue_ratio', 0),
+            'max_ecart': es.get('max_ecart', 0),
+            'freq_pct': es.get('freq_pct', 0),
+            'extreme_overdue': es.get('extreme_overdue', False),
         }
 
     result = dict(sorted(result.items(), key=lambda x: -x[1]['conf_avg']))
     return result
 
 
+_DISPLAY_NAMES = {
+    '🏆 Victoire Joueur':    'Victoire Joueur',
+    '🏆 Victoire Banquier':  'Victoire Banquier',
+    '🤝 Match Nul':          'Match Nul',
+    '📊 Pair':               'Pair',
+    '📊 Impair':             'Impair',
+    '🎴 2/2':                'Structure 2/2',
+    '🎴 2/3':                'Structure 2/3',
+    '🎴 3/2':                'Structure 3/2',
+    '🎴 3/3':                'Structure 3/3',
+    '👤 Joueur 2K':          'Joueur 2 cartes',
+    '👤 Joueur 3K':          'Joueur 3 cartes',
+    '🏦 Banquier 2K':        'Banquier 2 cartes',
+    '🏦 Banquier 3K':        'Banquier 3 cartes',
+    '📈 Joueur Plus 6.5':    'Joueur Plus 6.5',
+    '📉 Joueur Moins 4.5':   'Joueur Moins 4.5',
+    '📈 Banquier Plus 6.5':  'Banquier Plus 6.5',
+    '📉 Banquier Moins 4.5': 'Banquier Moins 4.5',
+    '♠ Manque Joueur':       'Prob ♠ Joueur',
+    '♥ Manque Joueur':       'Prob ❤ Joueur',
+    '♦ Manque Joueur':       'Prob ♦ Joueur',
+    '♣ Manque Joueur':       'Prob ♣ Joueur',
+    '♠ Manque Banquier':     'Prob ♠ Banquier',
+    '♥ Manque Banquier':     'Prob ❤ Banquier',
+    '♦ Manque Banquier':     'Prob ♦ Banquier',
+    '♣ Manque Banquier':     'Prob ♣ Banquier',
+    '🃏 A Joueur':           'As côté Joueur',
+    '🃏 K Joueur':           'Roi côté Joueur',
+    '🃏 Q Joueur':           'Dame côté Joueur',
+    '🃏 Valet Joueur':       'Valet côté Joueur',
+    '🎴 A Banquier':         'As côté Banquier',
+    '🎴 K Banquier':         'Roi côté Banquier',
+    '🎴 Q Banquier':         'Dame côté Banquier',
+    '🎴 Valet Banquier':     'Valet côté Banquier',
+}
+
+
 def format_category_list(cat_results: dict, total_games: int,
                           from_num: int, to_num: int) -> list:
     """
     Formate les prédictions par catégorie en messages Telegram HTML.
-    Chaque ligne de prédiction affiche la notation courte (V1, Pa, 2/3, J2K…)
-    au lieu d'un simple compteur.
+    Chaque catégorie affiche les détails d'écart : retard, ratio, barre de confiance.
     """
     messages = []
     total_preds = sum(len(v['nums']) for v in cat_results.values())
@@ -496,84 +554,89 @@ def format_category_list(cat_results: dict, total_games: int,
         if not nums:
             continue
 
-        # Noms affichés complets
-        _DISPLAY_NAMES = {
-            '🏆 Victoire Joueur':    'Victoire Joueur',
-            '🏆 Victoire Banquier':  'Victoire Banquier',
-            '🤝 Match Nul':          'Match Nul',
-            '📊 Pair':               'Pair',
-            '📊 Impair':             'Impair',
-            '🎴 2/2':                'Structure 2/2',
-            '🎴 2/3':                'Structure 2/3',
-            '🎴 3/2':                'Structure 3/2',
-            '🎴 3/3':                'Structure 3/3',
-            '👤 Joueur 2K':          'Joueur 2 cartes',
-            '👤 Joueur 3K':          'Joueur 3 cartes',
-            '🏦 Banquier 2K':        'Banquier 2 cartes',
-            '🏦 Banquier 3K':        'Banquier 3 cartes',
-            '📈 Joueur Plus 6.5':    'Joueur Plus 6.5',
-            '📉 Joueur Moins 4.5':   'Joueur Moins 4.5',
-            '↔️ Joueur Neutre':      'Joueur Neutre',
-            '📈 Banquier Plus 6.5':  'Banquier Plus 6.5',
-            '📉 Banquier Moins 4.5': 'Banquier Moins 4.5',
-            '↔️ Banquier Neutre':    'Banquier Neutre',
-            '♠ Manque Joueur':       'Prob ♠ Joueur',
-            '♥ Manque Joueur':       'Prob ❤ Joueur',
-            '♦ Manque Joueur':       'Prob ♦ Joueur',
-            '♣ Manque Joueur':       'Prob ♣ Joueur',
-            '♠ Manque Banquier':     'Prob ♠ Banquier',
-            '♥ Manque Banquier':     'Prob ❤ Banquier',
-            '♦ Manque Banquier':     'Prob ♦ Banquier',
-            '♣ Manque Banquier':     'Prob ♣ Banquier',
-            '🃏 A Joueur':           'As côté Joueur',
-            '🃏 K Joueur':           'Roi côté Joueur',
-            '🃏 Q Joueur':           'Dame côté Joueur',
-            '🃏 Valet Joueur':       'Valet côté Joueur',
-            '🎴 A Banquier':         'As côté Banquier',
-            '🎴 K Banquier':         'Roi côté Banquier',
-            '🎴 Q Banquier':         'Dame côté Banquier',
-            '🎴 Valet Banquier':     'Valet côté Banquier',
-        }
         clean_name = _DISPLAY_NAMES.get(cat_name,
                      cat_name.lstrip('🏆📊🎴👤🏦📈📉↔️♠️♥️♦️♣️🤝🃏 '))
 
+        avg_ecart = data.get('avg_ecart', 0)
+        current_ecart = data.get('current_ecart', 0)
+        last_occ = data.get('last_occ', 0)
+        overdue_ratio = data.get('overdue_ratio', 0)
+        freq_pct = data.get('freq_pct', 0)
+        extreme = data.get('extreme_overdue', False)
+        conf_per_num = data.get('conf', {})
+
+        bar = conf_bar(int(conf_avg))
+        ratio_str = f"{overdue_ratio:.1f}x" if overdue_ratio else '—'
+        retard_label = '🔥 RETARD EXTRÊME' if extreme else ('⚡ En retard' if overdue_ratio > 1.0 else '✅ Dans le cycle')
+
         lines = [
             f"{data['emoji']} <b>{notation}</b> — {clean_name}",
-            f"<i>Confiance : {conf_avg:.0f}%  |  {len(nums)} numéro(s)</i>",
-            ""
+            f"<code>{bar}</code> <b>{conf_avg:.0f}%</b>",
+            f"📊 Fréq: <b>{freq_pct}%</b>  |  Écart moy: <b>{avg_ecart}</b>  |  Max: <b>{data.get('max_ecart', 0)}</b>",
+            f"⏱ Dernier: <b>#N{last_occ}</b>  |  Retard: <b>{current_ecart} jeux</b> ({ratio_str})  {retard_label}",
+            "",
         ]
-        for num in nums:
-            lines.append(f"#{num} — {notation} | ⏳")
+        for num in sorted(nums):
+            c = conf_per_num.get(num, int(conf_avg))
+            lines.append(f"  #N{num} — <b>{notation}</b> | {c}%")
         messages.append('\n'.join(lines))
 
     if not messages:
         return ["❌ Aucune prédiction générée pour cette plage.\n"
                 "Essayez d'élargir la plage ou de charger plus de jeux."]
 
-    # Résumé final
     nb_cats = len(cat_results)
-
     summary_lines = [
-        f"📋 <b>RÉSUMÉ DES PRÉDICTIONS</b>",
-        f"🎲 Basé sur {total_games} jeux  |  Plage #N{from_num} → #N{to_num}",
-        f"🎯 {total_preds} prédiction(s) dans {nb_cats} catégorie(s)",
+        f"📋 <b>RÉSUMÉ CHRONOLOGIQUE</b>",
+        f"🎲 <b>{total_games}</b> jeux  |  Plage <b>#N{from_num}</b> → <b>#N{to_num}</b>",
+        f"🎯 <b>{total_preds}</b> prédiction(s) dans <b>{nb_cats}</b> catégorie(s)",
         "",
     ]
 
-    # Liste chronologique simple : #numéro  notation
     all_entries = []
     for cat_name, data in cat_results.items():
         notation = data['notation']
+        conf_per_num = data.get('conf', {})
         for num in data['nums']:
-            all_entries.append((num, notation))
+            c = conf_per_num.get(num, int(data['conf_avg']))
+            all_entries.append((num, notation, c))
 
     all_entries.sort(key=lambda x: x[0])
-    for num, notation in all_entries:
-        summary_lines.append(f"#{num}  {notation}")
+    for num, notation, c in all_entries:
+        summary_lines.append(f"#N{num}  <b>{notation}</b>  {c}%")
 
     messages.append('\n'.join(summary_lines))
-
     return messages
+
+
+def generate_top_predictions(games: list, next_n: int = 30,
+                              min_confidence: int = 40) -> list:
+    """
+    Génère la liste TOP des prédictions les plus fiables pour les N prochains jeux.
+    Retourne une liste de tuples (game_num, notation, confidence, cat_name).
+    Triée par confiance décroissante.
+    """
+    if not games:
+        return []
+    all_nums = [int(g['numero']) for g in games]
+    last_known = max(all_nums)
+    from_num = last_known + 1
+    to_num = last_known + next_n
+
+    cat_results = generate_category_list(games, from_num, to_num, min_confidence)
+    if not cat_results:
+        return []
+
+    entries = []
+    for cat_name, data in cat_results.items():
+        notation = data['notation']
+        conf_per_num = data.get('conf', {})
+        for num in data['nums']:
+            c = conf_per_num.get(num, int(data['conf_avg']))
+            entries.append((num, notation, c, cat_name))
+
+    entries.sort(key=lambda x: -x[2])
+    return entries
 
 
 def conf_bar(conf: int) -> str:

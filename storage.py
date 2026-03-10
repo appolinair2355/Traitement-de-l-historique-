@@ -12,8 +12,8 @@ ALL_COMMANDS = [
     'gload', 'gstats', 'gclear', 'ganalyze',
     'gvictoire', 'gparite', 'gstructure', 'gplusmoins', 'gcostume', 'gecartmax',
     'gvaleur', 'gcycle', 'gcycleauto',
-    'predictsetup', 'gpredictload', 'gpredict',
-    'searchcard', 'documentation', 'reset',
+    'predictsetup', 'gpredictload', 'gpredict', 'gtop',
+    'searchcard', 'documentation',
 ]
 
 PREDICT_CONFIG_FILE = os.path.join(
@@ -115,35 +115,24 @@ def clear_all():
         else:
             save_json(filepath, [])
             
+    # Supprimer physiquement le fichier de session pour forcer une réinitialisation propre
+    if os.path.exists(SESSION_PATH):
+        try:
+            os.remove(SESSION_PATH)
+        except:
+            pass
+            
     # Si d'autres fichiers de données existent dans le dossier data, on les nettoie
     data_dir = os.path.dirname(PREDICTIONS_FILE)
     if os.path.exists(data_dir):
         for f in os.listdir(data_dir):
-            # On ne touche pas à la session Telethon ni à l'auth
-            if f in ['telethon_session.session', 'auth_state.json', 'session_string.txt']:
-                continue
-            if f.endswith('.json') or f.endswith('.txt') or f.endswith('.pdf'):
+            # On ne touche pas à la session Telethon si elle est active, 
+            # mais l'utilisateur a demandé d'effacer la "base de données"
+            if f.endswith('.json') and f not in [os.path.basename(p) for p in files_to_reset]:
                 try:
                     os.remove(os.path.join(data_dir, f))
                 except:
                     pass
-
-def reset_all_data():
-    """Efface absolument tout sauf la session enregistrée."""
-    clear_all()
-    # On s'assure que même les fichiers non listés dans clear_all sont partis
-    data_dir = os.path.dirname(PREDICTIONS_FILE)
-    for f in os.listdir(data_dir):
-        if f not in ['telethon_session.session', 'auth_state.json', 'session_string.txt']:
-            try:
-                path = os.path.join(data_dir, f)
-                if os.path.isfile(path):
-                    os.remove(path)
-                elif os.path.isdir(path):
-                    import shutil
-                    shutil.rmtree(path)
-            except:
-                pass
 
 # ── Gestion des canaux de recherche ──────────────────────────────────────────
 

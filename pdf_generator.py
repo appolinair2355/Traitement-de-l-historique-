@@ -155,6 +155,70 @@ def generate_channel_search_pdf(messages, keywords, channel_title=''):
     return filename
 
 
+def generate_costume_pdf(results: list, threshold: int, source_name: str = '') -> str:
+    """
+    Génère un PDF des numéros/costumes extraits d'un PDF analysé.
+    results : liste de {'numero', 'couleur_emoji', 'count'}
+    threshold : seuil minimum d'occurrences
+    """
+    filename = f"/tmp/costumes_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+    doc = SimpleDocTemplate(filename, pagesize=A4, topMargin=30, bottomMargin=30,
+                            leftMargin=40, rightMargin=40)
+    styles = getSampleStyleSheet()
+
+    title_style = ParagraphStyle(
+        'CosTitle', parent=styles['Heading1'],
+        fontSize=16, textColor=colors.HexColor('#1a5276'),
+        alignment=TA_CENTER, spaceAfter=4
+    )
+    subtitle_style = ParagraphStyle(
+        'CosSub', parent=styles['Normal'],
+        fontSize=10, textColor=colors.HexColor('#555555'),
+        alignment=TA_CENTER, spaceAfter=16
+    )
+
+    el = []
+    el.append(Paragraph("ANALYSE COSTUMES — PDF", title_style))
+    if source_name:
+        el.append(Paragraph(f"Fichier : {source_name}", subtitle_style))
+    el.append(Paragraph(
+        f"Seuil minimum : {threshold} occurrence(s)  |  "
+        f"Résultats : {len(results)} numéro(s)  |  "
+        f"{datetime.now().strftime('%d/%m/%Y %H:%M')}",
+        subtitle_style
+    ))
+
+    if not results:
+        el.append(Paragraph(f"Aucun numéro n'apparaît {threshold} fois ou plus.", styles['Normal']))
+    else:
+        data = [['#', 'Numéro', 'Costume', 'Occurrences']]
+        for i, r in enumerate(results, 1):
+            data.append([
+                str(i),
+                str(r['numero']),
+                str(r.get('couleur_emoji', '?')),
+                str(r.get('count', 1)),
+            ])
+
+        col_widths = [35, 80, 100, 80]
+        table = Table(data, colWidths=col_widths)
+        table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#2874a6')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, -1), 10),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1),
+             [colors.white, colors.HexColor('#eaf4fb')]),
+        ]))
+        el.append(table)
+
+    doc.build(el)
+    return filename
+
+
 def generate_documentation_pdf(is_main_admin=True):
     filename = f"/tmp/documentation_vip_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
     doc = SimpleDocTemplate(filename, pagesize=A4, topMargin=30, bottomMargin=30,
@@ -272,7 +336,7 @@ def generate_documentation_pdf(is_main_admin=True):
     add_cmd("/filter", "Filtrer par couleur ou statut")
     add_cmd("/clear", "Effacer toutes les donn\u00e9es locales")
     add_text("<b>Envoi de PDF</b> : Envoyez un fichier PDF au bot, il en extrait automatiquement les num\u00e9ros et costumes.")
-    add_note("Le PDF affiche les num\u00e9ros au format : 1436 [costume]. Les num\u00e9ros apparaissant 4+ fois sont affich\u00e9s.")
+    add_note("Le PDF affiche les num\u00e9ros au format : 1436 [costume]. D\u00e9finissez le seuil en ajoutant une l\u00e9gende au fichier PDF envoy\u00e9 (ex: '3' ou 'min:3'). Par d\u00e9faut : 4 occurrences minimum. Le r\u00e9sultat est export\u00e9 en PDF.")
 
     el.append(PageBreak())
     add_section("4. ANALYSE BACCARAT &mdash; CHARGEMENT")
@@ -393,11 +457,16 @@ def generate_documentation_pdf(is_main_admin=True):
            "S = canal Statistiques (r\u00e9sultats #N), P = canal Pr\u00e9dicteur")
     add_cmd("/gpredictload", "Charger les jeux depuis les canaux statistiques")
     add_note("Charge automatiquement depuis tous les canaux marqu\u00e9s S.")
-    add_cmd("/gpredict", "G\u00e9n\u00e9rer des pr\u00e9dictions par cat\u00e9gorie")
+    add_cmd("/gpredict", "G\u00e9n\u00e9rer des pr\u00e9dictions d\u00e9taill\u00e9es par cat\u00e9gorie")
     add_ex("/gpredict 30  &mdash; Les 30 prochains jeux",
            "/gpredict 900 950  &mdash; Du jeu #900 au #950",
            "/gpredict 30 from:2026-02-20 to:2026-02-23")
-    add_note("67 cat\u00e9gories analys\u00e9es par l'algorithme d'\u00e9carts. Chaque num\u00e9ro n'appara\u00eet que dans la cat\u00e9gorie la plus confiante. Maximum 4 pr\u00e9dictions par cat\u00e9gorie.")
+    add_note("Chaque cat\u00e9gorie affiche : fr\u00e9quence, \u00e9cart moyen, \u00e9cart max, retard actuel, ratio de retard et barre de confiance visuelle.")
+    add_cmd("/gtop", "Top N pr\u00e9dictions les plus fiables (class\u00e9es par confiance)")
+    add_ex("/gtop  &mdash; Top sur les 30 prochains jeux",
+           "/gtop 50  &mdash; Top sur les 50 prochains jeux",
+           "/gtop 100  &mdash; Top sur les 100 prochains jeux")
+    add_note("Affiche toutes les pr\u00e9dictions tri\u00e9es du plus au moins fiable avec barre visuelle. Id\u00e9al pour voir les meilleures opportunit\u00e9s d'un coup.")
 
     if is_main_admin:
         add_section("8. ADMINISTRATION")

@@ -41,14 +41,15 @@ from storage import (get_predictions, get_stats, clear_all, search_predictions,
                      has_permission, add_admin, remove_admin, update_admin_permissions,
                      get_predict_config, save_predict_config, set_channel_role,
                      get_stats_channels, get_predictor_channels, reset_predict_config,
-                     reset_all_data, ALL_COMMANDS)
+                     ALL_COMMANDS)
 from game_analyzer import (parse_game, format_analysis, build_category_stats,
                            format_ecarts, normalize_suit, SUIT_EMOJI)
 from predictor import (generate_category_list, format_category_list,
-                       build_predict_data, format_global_summary)
+                       build_predict_data, format_global_summary,
+                       generate_top_predictions)
 from scraper import scraper
 from auth_manager import auth_manager
-from pdf_generator import generate_pdf, generate_search_pdf, generate_channel_search_pdf
+from pdf_generator import generate_pdf, generate_search_pdf, generate_channel_search_pdf, generate_costume_pdf
 from pdf_analyzer import analyze_pdf
 
 def is_admin(user_id: int) -> bool:
@@ -238,12 +239,15 @@ _MENU_SECTIONS = {
         "  <code>/gpredict 30</code> — Les 30 prochains jeux\n"
         "  <code>/gpredict 900 950</code> — Du jeu #900 au #950\n"
         "  <code>/gpredict 30 from:2026-02-20 to:2026-02-23</code>\n\n"
+        "<b>🔝 TOP prédictions (classées par confiance) :</b>\n"
+        "  <code>/gtop</code> — Top prédictions sur les 30 prochains jeux\n"
+        "  <code>/gtop 50</code> — Sur les 50 prochains jeux\n\n"
         "<b>Autres :</b>\n"
         "  <code>/gpredictload</code> — Charger depuis canaux de stats\n"
         "  <code>/ganalyze</code> — Analyser un enregistrement (copier-coller)\n"
         "  <code>/predictsetup</code> — Configurer les canaux de prédiction\n\n"
-        "💡 <i>Chaque prédiction analyse les manquements par catégorie :\n"
-        "V1/V2, Pa/I, costumes ♠♥♦♣, valeurs A/K/Q/Valet, structures 2K/3K</i>"
+        "💡 <i>Chaque prédiction montre : fréquence, écart moyen, retard actuel,\n"
+        "ratio de retard et barre de confiance visuelle.</i>"
     ),
     "analyse": (
         "📊 <b>ANALYSE</b>\n\n"
@@ -345,7 +349,6 @@ class Handlers:
         'filter':       'Filtrer par couleur ou statut',
         'stats':        'Statistiques des prédictions stockées',
         'clear':        'Effacer toutes les données locales',
-        'reset':        'FORCE RESET : Efface tout sauf la session',
         'addchannel':   'Ajouter un nouveau canal',
         'removechannel':'Supprimer un canal de la liste',
         'channels':     'Voir tous les canaux configurés',
@@ -367,6 +370,7 @@ class Handlers:
         'predictsetup': 'Configurer les canaux de prédiction',
         'gpredictload': 'Charger les jeux depuis les canaux de stats',
         'gpredict':     'Générer des prédictions par catégorie (N1 → N2)',
+        'gtop':         'Top N prédictions les plus fiables pour les prochains jeux',
         'searchcard':   'Rechercher les jeux par valeur de carte (A, K, Q, J)',
         'documentation':'Guide complet avec exemples d\'utilisation',
     }
@@ -388,43 +392,30 @@ class Handlers:
 
         data = query.data  # ex: "menu:recherche"
         section = data.split(":", 1)[1] if ":" in data else ""
-        
-        if section == "accueil":
-            await self.menu(update, context)
-            return
 
         # Vider les états d'attente lors de la navigation
         _clear_waits(uid)
 
-        if section == "recherche":
-            text = _MENU_SECTIONS["recherche"]
-            await query.edit_message_text(text, parse_mode='HTML', reply_markup=self._back_keyboard())
+        if section == "accueil":
+            main = is_main_admin(uid)
+            channels = get_channels()
+            ch_lines = []
+            for ch in channels:
+                mark = "▶️" if ch.get('active') else "○"
+                name = ch.get('name') or str(ch['id'])
+                ch_lines.append(f"  {mark} <b>{name}</b>")
+            ch_block = ("\n".join(ch_lines)) if ch_lines else "  <i>Aucun canal — tapez /addchannel</i>"
+            text = (
+                "🎯 <b>Bot VIP KOUAMÉ &amp; JOKER</b>\n\n"
+                f"📡 <b>Canaux :</b>\n{ch_block}\n\n"
+                "Choisissez une section :"
+            )
+            await query.edit_message_text(text, parse_mode='HTML',
+                                          reply_markup=_main_menu_keyboard(main))
             return
-        elif section == "prediction":
-            text = _MENU_SECTIONS["prediction"]
-            await query.edit_message_text(text, parse_mode='HTML', reply_markup=self._back_keyboard())
-            return
-        elif section == "analyse":
-            text = _MENU_SECTIONS["analyse"]
-            await query.edit_message_text(text, parse_mode='HTML', reply_markup=self._back_keyboard())
-            return
-        elif section == "cycles":
-            text = _MENU_SECTIONS["cycles"]
-            await query.edit_message_text(text, parse_mode='HTML', reply_markup=self._back_keyboard())
-            return
-        elif section == "canaux":
-            text = _MENU_SECTIONS["canaux"]
-            await query.edit_message_text(text, parse_mode='HTML', reply_markup=self._back_keyboard())
-            return
-        elif section == "doc":
-            text = _MENU_SECTIONS["doc"]
-            await query.edit_message_text(text, parse_mode='HTML', reply_markup=self._back_keyboard())
-            return
-        elif section == "admin":
-            if not is_main_admin(uid):
-                await query.answer("❌ Réservé à l'administrateur principal.")
-                return
-            await self.admin_menu(update, context)
+
+        if section == "admin" and not is_main_admin(uid):
+            await query.answer("❌ Réservé à l'administrateur principal.")
             return
 
         if section not in _MENU_SECTIONS:
@@ -1078,14 +1069,22 @@ class Handlers:
 
         msg = await update.message.reply_text("📥 PDF reçu. Analyse en cours...")
 
+        import re as _re
+        caption_raw = (update.message.caption or '').strip()
+        threshold = 4
+        min_match = _re.search(r'(?:min[:\s]?)?(\d+)', caption_raw, _re.IGNORECASE)
+        if min_match:
+            threshold = max(1, min(int(min_match.group(1)), 500))
+        source_name = doc.file_name or 'fichier.pdf'
+
         async def _do_analyze():
             tmp_path = f"/tmp/analyse_{doc.file_id}.pdf"
+            pdf_out = None
             try:
-                # Télécharger le PDF
                 file = await context.bot.get_file(doc.file_id)
                 await file.download_to_drive(tmp_path)
 
-                await msg.edit_text("🔍 Extraction des données du PDF...")
+                await msg.edit_text(f"🔍 Extraction en cours… (seuil : ≥{threshold} occurrences)")
 
                 results, raw_sample = analyze_pdf(tmp_path)
 
@@ -1098,45 +1097,30 @@ class Handlers:
                     )
                     return
 
-                # Compter les doublons
-                duplicates = [r for r in results if r['count'] > 1]
-                unique_count = len(results)
-                total_count = sum(r['count'] for r in results)
+                total_extracted = len(results)
+                filtered = [r for r in results if r.get('count', 1) >= threshold]
 
-                # Filtrer : seulement les numéros qui apparaissent au moins 4 fois
-                filtered = [r for r in results if r['count'] >= 4]
+                await msg.edit_text(
+                    f"📊 {total_extracted} numéros extraits  |  "
+                    f"{len(filtered)} avec ≥{threshold} occurrence(s)\n"
+                    "📄 Génération du PDF…"
+                )
 
-                # Construire la réponse au format demandé
-                lines = ["Joueur 😉😌", ""]
+                pdf_out = generate_costume_pdf(filtered, threshold, source_name)
 
-                for r in filtered:
-                    emoji = r.get('couleur_emoji', '?')
-                    lines.append(f"{r['numero']} [{emoji}]")
+                caption_pdf = (
+                    f"Joueur 😉😌\n"
+                    f"Seuil : ≥{threshold} occurrences  |  {len(filtered)} numéros"
+                )
 
-                if not filtered:
-                    lines.append("Aucun numéro n'apparaît 4 fois ou plus.")
-
-                lines.append("")
-                lines.append(f"Total : {len(filtered)} numéros (≥4 occurrences)")
-
-                response = '\n'.join(lines)
-
-                # Si trop long, envoyer en fichier texte
-                if len(response) > 4000:
-                    txt_path = f"/tmp/analyse_result_{doc.file_id}.txt"
-                    with open(txt_path, 'w', encoding='utf-8') as f:
-                        f.write(response)
-                    with open(txt_path, 'rb') as f:
-                        await context.bot.send_document(
-                            chat_id=update.effective_chat.id,
-                            document=f,
-                            caption=f"Joueur 😉😌 — {unique_count} numéros extraits",
-                            filename="predictions.txt"
-                        )
-                    os.remove(txt_path)
-                    await msg.delete()
-                else:
-                    await msg.edit_text(response)
+                with open(pdf_out, 'rb') as f:
+                    await context.bot.send_document(
+                        chat_id=update.effective_chat.id,
+                        document=f,
+                        caption=caption_pdf,
+                        filename=f"costumes_seuil{threshold}.pdf"
+                    )
+                await msg.delete()
 
             except Exception as e:
                 logger.error(f"PDF analyze error: {e}")
@@ -1147,6 +1131,8 @@ class Handlers:
             finally:
                 if os.path.exists(tmp_path):
                     os.remove(tmp_path)
+                if pdf_out and os.path.exists(pdf_out):
+                    os.remove(pdf_out)
 
         context.application.create_task(_do_analyze())
 
@@ -2918,6 +2904,84 @@ class Handlers:
 
         context.application.create_task(_load_from_stats())
 
+    async def gtop(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/gtop [N] — Top N prédictions les plus fiables pour les N prochains jeux."""
+        if not await self._perm(update, 'gtop'):
+            return
+        games = get_analyzed_games()
+        if not games:
+            await update.message.reply_text(
+                "❌ Aucun jeu chargé.\nTapez /gload ou /gpredictload d'abord."
+            )
+            return
+
+        args = context.args or []
+        next_n = 30
+        if args and args[0].isdigit():
+            next_n = max(5, min(int(args[0]), 200))
+
+        all_nums = sorted(int(g['numero']) for g in games)
+        last_known = all_nums[-1]
+
+        import asyncio as _asyncio
+        from datetime import datetime as _dt
+
+        msg = await update.message.reply_text(
+            f"🔝 Calcul du TOP pour les <b>{next_n}</b> prochains jeux…\n"
+            f"(#N{last_known+1} → #N{last_known+next_n})",
+            parse_mode='HTML'
+        )
+
+        entries = generate_top_predictions(games, next_n=next_n, min_confidence=38)
+        await msg.delete()
+
+        if not entries:
+            await update.message.reply_text(
+                "❌ Aucune prédiction fiable trouvée.\n"
+                "Essayez d'augmenter N ou de charger plus de jeux."
+            )
+            return
+
+        heure = _dt.now().strftime('%H:%M')
+        nb_games = len(games)
+        lines = [
+            f"🔝 <b>TOP PRÉDICTIONS</b>  ({heure})",
+            f"🎲 {nb_games} jeux  |  #N{last_known+1} → #N{last_known+next_n}",
+            f"🎯 {len(entries)} prédiction(s) classées par confiance",
+            "",
+        ]
+
+        from predictor import _DISPLAY_NAMES
+        for rank, (num, notation, conf, cat_name) in enumerate(entries, 1):
+            clean = _DISPLAY_NAMES.get(cat_name,
+                    cat_name.lstrip('🏆📊🎴👤🏦📈📉↔️♠️♥️♦️♣️🤝🃏 '))
+            bar_filled = round(conf / 10)
+            bar = '█' * bar_filled + '░' * (10 - bar_filled)
+            lines.append(f"<b>{rank:>2}.</b> #N{num}  <b>{notation}</b>  {conf}%  <code>{bar}</code>")
+            lines.append(f"     <i>{clean}</i>")
+
+        full_text = '\n'.join(lines)
+
+        chunk_size = 4000
+        if len(full_text) <= chunk_size:
+            await update.message.reply_text(full_text, parse_mode='HTML')
+        else:
+            parts = []
+            current = []
+            current_len = 0
+            for line in lines:
+                if current_len + len(line) + 1 > chunk_size:
+                    parts.append('\n'.join(current))
+                    current = []
+                    current_len = 0
+                current.append(line)
+                current_len += len(line) + 1
+            if current:
+                parts.append('\n'.join(current))
+            for part in parts:
+                await update.message.reply_text(part, parse_mode='HTML')
+                await _asyncio.sleep(0.3)
+
     async def gpredict(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/gpredict N1 N2 — Liste de prédictions par catégorie pour les jeux N1 à N2."""
         if not await self._perm(update, 'gpredict'):
@@ -3031,17 +3095,6 @@ class Handlers:
             await update.message.reply_text(m, parse_mode='HTML')
             await _asyncio.sleep(0.3)
 
-    async def reset(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """/reset — Force l'effacement de toutes les données sauf la session."""
-        if not await self._perm(update, 'reset'): return
-        
-        msg = await update.message.reply_text("⏳ Réinitialisation forcée en cours...")
-        try:
-            reset_all_data()
-            await msg.edit_text("✅ Toutes les données (canaux, recherches, prédictions, jeux) ont été effacées.\n\nLa session est conservée.")
-        except Exception as e:
-            await msg.edit_text(f"❌ Erreur lors du reset : {e}")
-
     async def clear(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await self._perm(update, 'clear'):
             return
@@ -3091,6 +3144,7 @@ def setup_bot():
     app.add_handler(CommandHandler("documentation", handlers.documentation))
     app.add_handler(CommandHandler("predictsetup", handlers.predictsetup))
     app.add_handler(CommandHandler("gpredictload", handlers.gpredictload))
+    app.add_handler(CommandHandler("gtop", handlers.gtop))
     app.add_handler(CommandHandler("gpredict", handlers.gpredict))
     app.add_handler(CommandHandler("addadmin", handlers.addadmin))
     app.add_handler(CommandHandler("setperm", handlers.setperm))
