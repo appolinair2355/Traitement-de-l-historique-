@@ -286,7 +286,8 @@ def generate_documentation_pdf(is_main_admin=True):
     add_section("SOMMAIRE")
     sommaire = [
         "1. Canaux &mdash; Gestion des canaux Telegram",
-        "2. Recherche &mdash; Recherche dans l'historique",
+        "2. Recherche admin &mdash; Recherche dans l'historique (r\u00e9serv\u00e9 admins)",
+        "2B. Recherche Sp\u00e9cialeB &mdash; Commande publique /recherche",
         "3. Donn\u00e9es locales &mdash; Synchronisation et export",
         "4. Analyse Baccarat &mdash; Chargement et statistiques",
         "5. Cat\u00e9gories d'analyse &mdash; Victoire, Parit\u00e9, Structure, Costumes, Valeurs",
@@ -312,7 +313,7 @@ def generate_documentation_pdf(is_main_admin=True):
     add_ex("/removechannel -1001234567890")
     add_note("Apr\u00e8s /addchannel, utilisez /gload pour charger les jeux du canal actif.")
 
-    add_section("2. RECHERCHE")
+    add_section("2. RECHERCHE ADMIN \u2014 R\u00c9SERV\u00c9E AUX ADMINISTRATEURS")
     add_cmd("/hsearch", "Rechercher des mots-cl\u00e9s dans l'historique du canal actif")
     add_ex("/hsearch GAGN\u00c9 Coeur",
            "/hsearch PERDU limit:500",
@@ -327,6 +328,28 @@ def generate_documentation_pdf(is_main_admin=True):
     add_note("Valeurs : A, K, Q, J. C\u00f4t\u00e9s : joueur, banquier, tous")
     add_cmd("/search", "Recherche dans les donn\u00e9es locales (pr\u00e9dictions stock\u00e9es)")
     add_ex("/search rouge gagn\u00e9", "/search Coeur limit:100")
+
+    add_section("2B. RECHERCHE SP\u00c9CIALE B \u2014 COMMANDE PUBLIQUE")
+    add_note("Accessible \u00e0 tous les utilisateurs. Pas d'authentification requise.")
+    add_cmd("/recherche", "Rechercher des jeux dans un canal Baccarat par date et mot-cl\u00e9")
+    add_text("<b>\u00c9tape 1</b> — Choisir le canal")
+    add_note("Le bot affiche la liste num\u00e9rot\u00e9e des canaux configur\u00e9s. Tapez le num\u00e9ro correspondant.")
+    add_text("<b>\u00c9tape 2</b> — Saisir la date")
+    add_ex("10/03/2026", "2026-03-10", "10-03-2026")
+    add_text("<b>\u00c9tape 3</b> — Saisir le mot-cl\u00e9 \u00e0 rechercher")
+    add_ex("joueur  &mdash; Jeux gagn\u00e9s Joueur",
+           "banquier  &mdash; Jeux gagn\u00e9s Banquier",
+           "nul  &mdash; Jeux nuls",
+           "\u2660  &mdash; Jeux contenant le Pique",
+           "\u2665  &mdash; Jeux contenant le Coeur",
+           "K  &mdash; Jeux contenant un Roi",
+           "A  &mdash; Jeux contenant un As")
+    add_text("<b>R\u00e9sultat</b>")
+    add_note("Aper\u00e7u des 20 premiers r\u00e9sultats : num\u00e9ro + costumes pr\u00e9sents."
+             " Tapez 'oui' pour continuer (nouvelle date / mot-cl\u00e9, m\u00eame canal),"
+             " 'non' pour recevoir le fichier texte complet (format numero:costume).")
+    add_note("Le canal s\u00e9lectionn\u00e9 est conserv\u00e9 pour les recherches suivantes."
+             " Tapez 'annuler' \u00e0 tout moment pour quitter.")
 
     add_section("3. DONN\u00c9ES LOCALES")
     add_cmd("/sync", "R\u00e9cup\u00e9rer les nouveaux messages depuis la derni\u00e8re synchronisation")

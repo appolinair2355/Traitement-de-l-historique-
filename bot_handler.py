@@ -3,7 +3,7 @@ import asyncio
 import logging
 import html
 from datetime import datetime, timezone
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 from telegram.ext import (Application, CommandHandler, CallbackQueryHandler,
                            ContextTypes, MessageHandler, filters)
 from config import BOT_TOKEN, ADMIN_ID, CHANNEL_USERNAME, USER_PHONE
@@ -32,6 +32,34 @@ def _schedule_delete(msg, delay: int = 10):
     task = asyncio.create_task(_delete_after_delay(msg, delay))
     _pending_deletions.add(task)
     task.add_done_callback(_pending_deletions.discard)
+
+
+# ── Détection et formatage des erreurs Telethon critiques ─────────────────────
+_AUTH_KEY_MARKERS = (
+    "authorization key",
+    "authkeyduplicatederror",
+    "auth_key_duplicated",
+    "used under two different ip",
+    "two different ip addresses",
+)
+
+def _is_auth_key_dup(e: Exception) -> bool:
+    """Détecte AuthKeyDuplicatedError de Telethon par le message d'erreur."""
+    msg = str(e).lower()
+    return any(m in msg for m in _AUTH_KEY_MARKERS)
+
+
+_AUTH_KEY_DUP_MSG = (
+    "🔑 <b>Conflit de session Telethon</b>\n\n"
+    "La même clé de session est utilisée <b>simultanément depuis deux serveurs</b> "
+    "(ex. Replit + Render en même temps).\n\n"
+    "<b>Pour corriger :</b>\n"
+    "  1. Arrêtez l'une des instances (gardez <b>seulement Replit OU Render</b>)\n"
+    "  2. Tapez <b>/disconnect</b> pour effacer la session corrompue\n"
+    "  3. Tapez <b>/connect</b> puis <b>/code</b> pour vous reconnecter\n\n"
+    "⚠️ <i>N'utilisez jamais la même session depuis deux serveurs simultanément.</i>"
+)
+
 
 from storage import (get_predictions, get_stats, clear_all, search_predictions,
                      get_channels, add_channel, remove_channel,
@@ -157,6 +185,55 @@ _waiting_for_helpcl: dict[int, bool] = {}
 # État : attend la saisie des rôles dans /predictsetup
 # {uid: {'step': str, 'channels': list}}
 _waiting_for_predict: dict[int, dict] = {}
+# Mapping costumes → emojis pour l'export public
+_DS_SUIT_EMOJI = {'♠': '♠️', '♥': '❤️', '♦': '♦️', '♣': '♣️'}
+
+# État persistant de la recherche publique (fichier partagé entre instances)
+_DS_STATE_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), 'data', 'dsearch_state.json'
+)
+
+def _ds_load(uid: int) -> dict:
+    """Charge l'état de recherche d'un utilisateur depuis le fichier."""
+    try:
+        import json as _json
+        if not os.path.exists(_DS_STATE_FILE):
+            return {}
+        with open(_DS_STATE_FILE, 'r', encoding='utf-8') as f:
+            data = _json.load(f)
+        return data.get(str(uid), {})
+    except Exception:
+        return {}
+
+def _ds_save(uid: int, state: dict):
+    """Sauvegarde l'état de recherche d'un utilisateur dans le fichier."""
+    try:
+        import json as _json
+        os.makedirs(os.path.dirname(_DS_STATE_FILE), exist_ok=True)
+        try:
+            with open(_DS_STATE_FILE, 'r', encoding='utf-8') as f:
+                data = _json.load(f)
+        except Exception:
+            data = {}
+        data[str(uid)] = state
+        with open(_DS_STATE_FILE, 'w', encoding='utf-8') as f:
+            _json.dump(data, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+def _ds_clear(uid: int):
+    """Efface l'état de recherche d'un utilisateur."""
+    try:
+        import json as _json
+        if not os.path.exists(_DS_STATE_FILE):
+            return
+        with open(_DS_STATE_FILE, 'r', encoding='utf-8') as f:
+            data = _json.load(f)
+        data.pop(str(uid), None)
+        with open(_DS_STATE_FILE, 'w', encoding='utf-8') as f:
+            _json.dump(data, f, ensure_ascii=False)
+    except Exception:
+        pass
 
 
 def _clear_waits(uid: int):
@@ -168,6 +245,7 @@ def _clear_waits(uid: int):
     _waiting_for_perm.pop(uid, None)
     _waiting_for_helpcl.pop(uid, None)
     _waiting_for_predict.pop(uid, None)
+    _ds_clear(uid)
 
 def _build_channel_menu(channels: list) -> str:
     """Construit le menu numéroté des canaux pour /helpcl."""
@@ -197,6 +275,9 @@ def _build_cmd_menu(target_uid: int, action: str) -> str:
 def _main_menu_keyboard(is_main: bool = True) -> InlineKeyboardMarkup:
     """Clavier principal du bot organisé par section."""
     rows = [
+        # ── Commande publique — bien séparée des outils admin ──
+        [InlineKeyboardButton("🔎 Recherche SpécialeB", callback_data="menu:rechercheB")],
+        # ── Outils admin ──
         [InlineKeyboardButton("🔍 Recherche",      callback_data="menu:recherche"),
          InlineKeyboardButton("🔮 Prédiction",     callback_data="menu:prediction")],
         [InlineKeyboardButton("📊 Analyse",         callback_data="menu:analyse"),
@@ -294,10 +375,27 @@ _MENU_SECTIONS = {
         "<b>/removechannel -1001234567890</b> — Supprimer un canal\n\n"
         "💡 <i>Après /addchannel, utilisez /gload pour charger les jeux du canal actif.</i>"
     ),
+    "rechercheB": (
+        "🔎 <b>RECHERCHE SPÉCIALE B</b>\n\n"
+        "Commande publique — accessible à <b>tous les utilisateurs</b>.\n\n"
+        "<b>/recherche</b> — Lancer une recherche dans un canal Baccarat\n\n"
+        "<b>Étapes :</b>\n"
+        "  1️⃣ Choisir le canal à analyser (liste numérotée)\n"
+        "  2️⃣ Saisir la date  <code>10/03/2026</code> ou <code>2026-03-10</code>\n"
+        "  3️⃣ Saisir le terme à chercher :\n"
+        "      <code>joueur</code>  <code>banquier</code>  <code>nul</code>\n"
+        "      <code>♠</code>  <code>♥</code>  <code>♦</code>  <code>♣</code>\n"
+        "      <code>K</code>  <code>A</code>  <code>Q</code>  <code>J</code>\n\n"
+        "<b>Résultat :</b>\n"
+        "  • Aperçu des 20 premiers numéros et costumes\n"
+        "  • Puis choix : continuer ou recevoir le fichier complet\n"
+        "  • Fichier exporté au format <code>numero:costume</code>\n\n"
+        "💡 <i>Tapez <b>annuler</b> à tout moment pour quitter.</i>"
+    ),
     "doc": (
         "📚 <b>DOCUMENTATION</b>\n\n"
-        "Tapez <b>/documentation</b> pour recevoir le guide complet\n"
-        "avec des exemples détaillés pour chaque commande.\n\n"
+        "Tapez <b>/documentation</b> pour recevoir le guide PDF complet\n"
+        "avec des exemples détaillés pour toutes les commandes.\n\n"
         "<b>Format des dates (toutes commandes) :</b>\n"
         "  <code>from:2026-02-20</code> — depuis le 20 fév.\n"
         "  <code>from:2026-02-20 08:00</code> — depuis le 20 fév. à 8h\n"
@@ -373,6 +471,7 @@ class Handlers:
         'gtop':         'Top N prédictions les plus fiables pour les prochains jeux',
         'searchcard':   'Rechercher les jeux par valeur de carte (A, K, Q, J)',
         'documentation':'Guide complet avec exemples d\'utilisation',
+        'recherche':    'Recherche SpécialeB — par canal, date et mot-clé (public)',
     }
 
     def _back_keyboard(self):
@@ -449,8 +548,33 @@ class Handlers:
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         uid = update.effective_user.id
+
+        # ── Utilisateur non-admin : message d'accueil public ──────────────────
         if not is_admin(uid):
+            first_name = update.effective_user.first_name or 'cher utilisateur'
+            kb = ReplyKeyboardMarkup(
+                [[KeyboardButton("🔎 Recherche SpécialeB — /recherche")]],
+                resize_keyboard=True,
+                one_time_keyboard=False,
+            )
+            await update.message.reply_text(
+                f"👋 Bonjour <b>{html.escape(first_name)}</b> !\n\n"
+                "🎯 <b>Bot VIP KOUAMÉ — Analyse Baccarat</b>\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n"
+                "🔎 <b>RECHERCHE SPÉCIALE B</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                "<b>/recherche</b> — Rechercher des jeux dans un canal\n\n"
+                "  1️⃣ Choisissez le canal\n"
+                "  2️⃣ Entrez la date  <code>10/03/2026</code>\n"
+                "  3️⃣ Entrez un mot-clé  <code>joueur</code> / <code>banquier</code> / <code>♠</code>\n"
+                "  4️⃣ Recevez les numéros + costumes (aperçu + fichier)\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n"
+                "💡 Appuyez sur le bouton ci-dessous ou tapez /recherche",
+                parse_mode='HTML',
+                reply_markup=kb,
+            )
             return
+
         main = is_main_admin(uid)
 
         # ── Sous-admin : afficher ses commandes autorisées avec menu ──
@@ -724,7 +848,10 @@ class Handlers:
             except Exception as e:
                 logger.error(f"Sync error: {e}")
                 try:
-                    await msg.edit_text(f"❌ Erreur: {str(e)[:300]}")
+                    if _is_auth_key_dup(e):
+                        await msg.edit_text(_AUTH_KEY_DUP_MSG, parse_mode='HTML')
+                    else:
+                        await msg.edit_text(f"❌ Erreur: {str(e)[:300]}")
                 except Exception:
                     pass
             finally:
@@ -764,7 +891,10 @@ class Handlers:
             except Exception as e:
                 logger.error(f"Fullsync error: {e}")
                 try:
-                    await msg.edit_text(f"❌ Erreur: {str(e)[:300]}")
+                    if _is_auth_key_dup(e):
+                        await msg.edit_text(_AUTH_KEY_DUP_MSG, parse_mode='HTML')
+                    else:
+                        await msg.edit_text(f"❌ Erreur: {str(e)[:300]}")
                 except Exception:
                     pass
             finally:
@@ -893,6 +1023,9 @@ class Handlers:
                 except Exception as e:
                     logger.error(f"Search canal error: {e}")
                     try:
+                        if _is_auth_key_dup(e):
+                            await msg.edit_text(_AUTH_KEY_DUP_MSG, parse_mode='HTML')
+                            return
                         await msg.edit_text(f"⚠️ Erreur canal: {str(e)[:200]}\nRecherche dans les données locales...")
                     except Exception:
                         pass
@@ -1422,7 +1555,10 @@ class Handlers:
             except Exception as e:
                 logger.error(f"hsearch error: {e}")
                 try:
-                    await msg.edit_text(f"❌ Erreur: {str(e)[:300]}")
+                    if _is_auth_key_dup(e):
+                        await msg.edit_text(_AUTH_KEY_DUP_MSG, parse_mode='HTML')
+                    else:
+                        await msg.edit_text(f"❌ Erreur: {str(e)[:300]}")
                 except Exception:
                     pass
             finally:
@@ -1495,11 +1631,14 @@ class Handlers:
 
             except Exception as e:
                 _waiting_for_channel.pop(update.effective_user.id, None)
-                await msg.edit_text(
-                    f"❌ Impossible d'accéder à ce canal : {str(e)[:200]}\n\n"
-                    "Vérifiez que le compte Telegram est membre de ce canal.",
-                    parse_mode='Markdown'
-                )
+                if _is_auth_key_dup(e):
+                    await msg.edit_text(_AUTH_KEY_DUP_MSG, parse_mode='HTML')
+                else:
+                    await msg.edit_text(
+                        f"❌ Impossible d'accéder à ce canal : {str(e)[:200]}\n\n"
+                        "Vérifiez que le compte Telegram est membre de ce canal.",
+                        parse_mode='HTML'
+                    )
 
         context.application.create_task(_do_add())
 
@@ -1620,7 +1759,10 @@ class Handlers:
             except Exception as e:
                 logger.error(f"gload error: {e}")
                 try:
-                    await msg.edit_text(f"❌ Erreur: {str(e)[:300]}")
+                    if _is_auth_key_dup(e):
+                        await msg.edit_text(_AUTH_KEY_DUP_MSG, parse_mode='HTML')
+                    else:
+                        await msg.edit_text(f"❌ Erreur: {str(e)[:300]}")
                 except Exception:
                     pass
             finally:
@@ -2534,16 +2676,49 @@ class Handlers:
         from datetime import datetime as _dt
         cats = build_category_stats(games)
 
-        def find_max_pair(nums):
-            if len(nums) < 2:
-                return None, 0
+        all_nums_global = [int(g['numero']) for g in games]
+        first_game = min(all_nums_global)
+        last_game  = max(all_nums_global)
+
+        def find_max_gap(nums):
+            """
+            Retourne (label_gauche, label_droit, ecart_max).
+            Prend en compte :
+              - L'absence initiale (début du dataset → 1ère occurrence)
+              - Les absences entre occurrences consécutives
+              - L'absence terminale (dernière occurrence → fin du dataset)
+            """
+            if not nums:
+                return ('Début', 'Fin', last_game - first_game)
             s = sorted(int(n) for n in nums)
-            max_diff, pair = 0, (s[0], s[1])
+
+            best_diff = 0
+            best_left = 'Début'
+            best_right = str(s[0])
+
+            # Gap initial : début dataset → première occurrence
+            init_gap = s[0] - first_game
+            if init_gap > best_diff:
+                best_diff  = init_gap
+                best_left  = f'Début(#{first_game})'
+                best_right = str(s[0])
+
+            # Gaps entre occurrences consécutives
             for i in range(len(s) - 1):
                 diff = s[i + 1] - s[i]
-                if diff > max_diff:
-                    max_diff, pair = diff, (s[i], s[i + 1])
-            return pair, max_diff
+                if diff > best_diff:
+                    best_diff  = diff
+                    best_left  = str(s[i])
+                    best_right = str(s[i + 1])
+
+            # Gap terminal : dernière occurrence → fin dataset
+            term_gap = last_game - s[-1]
+            if term_gap > best_diff:
+                best_diff  = term_gap
+                best_left  = str(s[-1])
+                best_right = f'Fin(#{last_game})'
+
+            return (best_left, best_right, best_diff)
 
         all_categories = [
             ("🏆 Victoire Joueur",        cats['victoire']['JOUEUR']),
@@ -2591,13 +2766,11 @@ class Handlers:
         bilan_lines = []
 
         for label, nums in all_categories:
-            if not nums:
-                continue
-            pair, diff = find_max_pair(nums)
+            left, right, diff = find_max_gap(nums)
             if diff == 0:
                 continue
             detail_lines.append(f"<b>{label}</b>")
-            detail_lines.append(f"  N° {pair[0]}  →  N° {pair[1]}  =  <b>{diff}</b>\n")
+            detail_lines.append(f"  N° {left}  →  N° {right}  =  <b>{diff}</b>\n")
             bilan_lines.append(f"{label} : {diff}")
 
         detail_text = '\n'.join(detail_lines)
@@ -2621,9 +2794,11 @@ class Handlers:
         await update.message.reply_text("🗑️ Jeux analysés effacés.")
 
     async def handle_text_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Routeur de texte : canal, helpcl, predict, permissions ou analyse de jeu."""
+        """Routeur de texte : canal, helpcl, predict, permissions, recherche ou analyse de jeu."""
         uid = update.effective_user.id
-        if _waiting_for_helpcl.get(uid):
+        if _ds_load(uid):
+            await self.handle_dsearch_input(update, context)
+        elif _waiting_for_helpcl.get(uid):
             await self.handle_helpcl_input(update, context)
         elif _waiting_for_predict.get(uid):
             await self.handle_predict_input(update, context)
@@ -3095,6 +3270,367 @@ class Handlers:
             await update.message.reply_text(m, parse_mode='HTML')
             await _asyncio.sleep(0.3)
 
+    # ── Recherche publique par jour (/recherche) ─────────────────────────────
+
+    async def recherche(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/recherche — Recherche publique dans les jeux d'une journée. Ouvert à tous."""
+        uid = update.effective_user.id
+        channels = get_channels()
+
+        if not channels:
+            await update.message.reply_text(
+                "❌ <b>Aucun canal configuré.</b>\n\n"
+                "Un administrateur doit d'abord ajouter un canal avec /addchannel.",
+                parse_mode='HTML'
+            )
+            return
+
+        # Construire le menu numéroté des canaux
+        lines = []
+        for i, ch in enumerate(channels, 1):
+            mark = "▶️" if ch.get('active') else "  "
+            name = ch.get('name') or ch['id']
+            lines.append(f"  {mark} <b>{i}.</b> {html.escape(name)}")
+        menu_text = '\n'.join(lines)
+
+        _ds_save(uid, {
+            'step': 'wait_channel',
+            'channels_snapshot': [{'id': ch['id'], 'name': ch.get('name', ch['id'])}
+                                   for ch in channels],
+            'channel_id': '',
+            'channel_name': '',
+            'date_str': '',
+            'date_display': '',
+            'kw': '',
+            'results': [],
+        })
+
+        await update.message.reply_text(
+            "🔍 <b>RECHERCHE PAR JOUR</b>\n\n"
+            "📡 <b>Choisissez le canal à analyser :</b>\n\n"
+            f"{menu_text}\n\n"
+            "Tapez le <b>numéro</b> du canal (ex : <code>1</code>)\n"
+            "Tapez <b>annuler</b> pour quitter.",
+            parse_mode='HTML'
+        )
+
+    def _dsearch_costume(self, game: dict) -> str:
+        """Extrait les emojis de costumes présents dans un jeu (J + B combinés)."""
+        all_suits = {'♠', '♥', '♦', '♣'}
+        missing_j = set(game.get('missing_j') or [])
+        missing_b = set(game.get('missing_b') or [])
+        present = (all_suits - missing_j) | (all_suits - missing_b)
+        order = ['♠', '♥', '♦', '♣']
+        return ''.join(_DS_SUIT_EMOJI.get(s, s) for s in order if s in present)
+
+    def _dsearch_filter_games(self, date_iso: str, kw: str) -> list:
+        """Filtre les jeux chargés par date (YYYY-MM-DD) et mot-clé.
+        Retourne liste de [numero, costume_str] (JSON-sérialisable)."""
+        games = get_analyzed_games()
+        if not games:
+            return []
+
+        kw_low = kw.strip().lower()
+        results = []
+
+        for g in games:
+            # Filtre par date (comparer les 10 premiers chars "YYYY-MM-DD")
+            if date_iso:
+                raw_date = str(g.get('date', ''))
+                if not raw_date or raw_date[:10] != date_iso:
+                    continue
+
+            # Filtre par mot-clé dans le texte brut
+            raw = g.get('raw', '')
+            if kw_low and kw_low not in raw.lower():
+                continue
+
+            numero = str(g.get('numero', '?'))
+            costume = self._dsearch_costume(g)
+            results.append([numero, costume])  # liste pour JSON
+
+        return results
+
+    async def handle_dsearch_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Gère les entrées texte de la conversation /recherche (état persistant fichier)."""
+        uid = update.effective_user.id
+        state = _ds_load(uid)
+        if not state:
+            return
+
+        text = update.message.text.strip()
+
+        # Annulation universelle
+        if text.lower() in ('annuler', 'cancel', '/cancel', 'quitter', 'stop'):
+            _ds_clear(uid)
+            await update.message.reply_text("❌ Recherche annulée.")
+            return
+
+        step = state['step']
+
+        # ── Étape 0 : sélection du canal ─────────────────────────────────────
+        if step == 'wait_channel':
+            channels_snap = state.get('channels_snapshot', [])
+            if not text.isdigit() or not (1 <= int(text) <= len(channels_snap)):
+                await update.message.reply_text(
+                    f"⚠️ Tapez un numéro entre <b>1</b> et <b>{len(channels_snap)}</b>.",
+                    parse_mode='HTML'
+                )
+                return
+            idx = int(text) - 1
+            chosen = channels_snap[idx]
+            state['channel_id'] = chosen['id']
+            state['channel_name'] = chosen['name']
+            state['step'] = 'wait_date'
+            _ds_save(uid, state)
+            await update.message.reply_text(
+                f"✅ Canal : <b>{html.escape(chosen['name'])}</b>\n\n"
+                "📅 <b>Quelle date voulez-vous analyser ?</b>\n\n"
+                "Formats acceptés :\n"
+                "  <code>10/03/2026</code>\n"
+                "  <code>2026-03-10</code>\n"
+                "  <code>10-03-2026</code>",
+                parse_mode='HTML'
+            )
+            return
+
+        # ── Étape 1 : réception de la date ──────────────────────────────────
+        if step == 'wait_date':
+            dt = parse_date(text)
+            if not dt:
+                await update.message.reply_text(
+                    "⚠️ Date non reconnue. Essayez :\n"
+                    "  <code>10/03/2026</code>  ou  <code>2026-03-10</code>",
+                    parse_mode='HTML'
+                )
+                return
+            state['date_str'] = dt.strftime('%Y-%m-%d')       # ISO pour la comparaison
+            state['date_display'] = dt.strftime('%d/%m/%Y')   # Pour l'affichage
+            state['step'] = 'wait_kw'
+            _ds_save(uid, state)
+            await update.message.reply_text(
+                f"✅ Date : <b>{state['date_display']}</b>\n\n"
+                f"🔎 <b>Que voulez-vous rechercher dans cette journée ?</b>\n\n"
+                f"Exemples : <code>joueur</code>  <code>banquier</code>  "
+                f"<code>♠</code>  <code>K</code>  <code>nul</code>\n\n"
+                f"💡 La recherche couvre les jeux <b>#1 → #1440</b> de ce jour.",
+                parse_mode='HTML'
+            )
+            return
+
+        # ── Étape 2 : réception du mot-clé et lancement de la recherche ─────
+        if step == 'wait_kw':
+            kw = text
+            state['kw'] = kw
+            state['step'] = 'wait_again'
+            _ds_save(uid, state)
+
+            date_display = state.get('date_display', state.get('date_str', '?'))
+            channel_id  = state.get('channel_id', '')
+            channel_name = state.get('channel_name', channel_id)
+            date_iso = state.get('date_str', '')
+
+            msg = await update.message.reply_text(
+                f"⏳ Recherche de <b>{html.escape(kw)}</b> "
+                f"le <b>{date_display}</b> dans <b>{html.escape(channel_name)}</b>…\n"
+                f"(peut prendre quelques secondes)",
+                parse_mode='HTML'
+            )
+
+            found = []
+            error_txt = None
+
+            # ── Recherche live Telethon (tous les messages) ─────────────────
+            try:
+                import re as _re
+                from datetime import timezone as _tz, timedelta as _td
+                from datetime import datetime as _dt2
+
+                # Fenêtre élargie de ±6h pour couvrir tous les fuseaux horaires
+                day       = _dt2.strptime(date_iso, '%Y-%m-%d').replace(tzinfo=_tz.utc)
+                from_date = day - _td(hours=6)
+                to_date   = day + _td(hours=30)   # fin de journée + 6h de marge
+
+                # Regex pour extraire le numéro de jeu #N794 → 794
+                _NUM_RE = _re.compile(r'#[Nn](\d{1,4})')
+
+                async def _prog(checked, total_found_so_far):
+                    try:
+                        await msg.edit_text(
+                            f"⏳ Analyse en cours… <b>{checked}</b> messages parcourus "
+                            f"(<b>{total_found_so_far}</b> trouvés)",
+                            parse_mode='HTML'
+                        )
+                    except Exception:
+                        pass
+
+                # search_in_any_channel cherche dans TOUS les messages (prédictions,
+                # résultats, jeux bruts, etc.) — pas seulement les jeux Baccarat structurés
+                results_raw, _title, _cancelled = await scraper.search_in_any_channel(
+                    channel_id,
+                    keywords=[kw],
+                    from_date=from_date,
+                    to_date=to_date,
+                    progress_callback=_prog,
+                )
+
+                # Regex numéro : "PRÉDICTION #324"  ou  "#N794"  ou  "#794"
+                _PRED_NUM_RE = _re.compile(
+                    r'PRÉDICTION\s+#(\d{1,4})'      # priorité 1 : PRÉDICTION #324
+                    r'|#[Nn](\d{1,4})'               # priorité 2 : #N794 / #n794
+                    r'|(?<!\d)#(\d{1,4})(?!\d)'      # priorité 3 : #324 isolé
+                )
+                # Costumes dans l'ordre canonique
+                _SUIT_ORDER = [('♠️','♠️'), ('❤️','❤️'), ('♥️','❤️'),
+                               ('♦️','♦️'), ('♣️','♣️'),
+                               ('♠','♠️'),  ('♥','❤️'), ('♦','♦️'), ('♣','♣️')]
+
+                for i, rec in enumerate(results_raw, 1):
+                    raw_txt = rec['text'] if isinstance(rec, dict) else str(rec)
+
+                    # ── Extraire le numéro ──────────────────────────────────
+                    m_num = _PRED_NUM_RE.search(raw_txt)
+                    if m_num:
+                        numero = m_num.group(1) or m_num.group(2) or m_num.group(3)
+                    else:
+                        numero = str(i)
+
+                    # ── Extraire les costumes (déduplication ordonnée) ──────
+                    seen_suits = []
+                    for raw_s, emoji_s in _SUIT_ORDER:
+                        if raw_s in raw_txt and emoji_s not in seen_suits:
+                            seen_suits.append(emoji_s)
+                    costume = ''.join(seen_suits) if seen_suits else '—'
+
+                    found.append([numero, costume])
+
+            except Exception as e:
+                err_str = str(e)
+                if _is_auth_key_dup(e):
+                    error_txt = _AUTH_KEY_DUP_MSG
+                elif 'Non authentifié' in err_str or 'authorized' in err_str.lower():
+                    error_txt = (
+                        "🔒 Le bot n'est pas connecté à Telethon.\n"
+                        "Un administrateur doit taper /connect pour activer la recherche live."
+                    )
+                else:
+                    # Repli sur les jeux locaux
+                    found = self._dsearch_filter_games(date_iso, kw)
+                    if not found:
+                        error_txt = (
+                            f"⚠️ Recherche live échouée (<i>{html.escape(err_str[:80])}</i>).\n"
+                            f"Aucun résultat dans les jeux locaux non plus."
+                        )
+
+            # Supprimer le message de progression
+            try:
+                await msg.delete()
+            except Exception:
+                pass
+
+            if error_txt:
+                await update.message.reply_text(error_txt, parse_mode='HTML')
+                await update.message.reply_text(
+                    "🔄 Voulez-vous faire une autre recherche ?\n"
+                    "Tapez <b>oui</b> ou <b>non</b>.",
+                    parse_mode='HTML'
+                )
+                return
+
+            if not found:
+                await update.message.reply_text(
+                    f"❌ Aucun résultat pour <b>{html.escape(kw)}</b> "
+                    f"le <b>{date_display}</b> dans <b>{html.escape(channel_name)}</b>.\n\n"
+                    f"Conseil : vérifiez la date ou le terme de recherche.",
+                    parse_mode='HTML'
+                )
+                await update.message.reply_text(
+                    "🔄 Voulez-vous faire une autre recherche ?\n"
+                    "Tapez <b>oui</b> pour continuer ou <b>non</b> pour quitter.",
+                    parse_mode='HTML'
+                )
+                return
+
+            # Accumulation dans la session
+            state['results'].extend(found)
+            _ds_save(uid, state)
+            total_found = len(found)
+
+            # Envoyer les 20 premiers en aperçu
+            preview = found[:20]
+            lines = [f"<code>#{html.escape(str(num))}</code> : {html.escape(str(cos))}" for num, cos in preview]
+            preview_text = (
+                f"🎯 <b>{total_found} résultat(s)</b> pour "
+                f"<b>{html.escape(kw)}</b> le <b>{date_display}</b>\n"
+                f"📡 Canal : <b>{html.escape(channel_name)}</b>\n\n"
+                + '\n'.join(lines)
+            )
+            if total_found > 20:
+                preview_text += f"\n\n<i>…et {total_found - 20} autre(s) résultat(s).</i>"
+
+            await update.message.reply_text(preview_text, parse_mode='HTML')
+
+            await update.message.reply_text(
+                "🔄 Voulez-vous faire une autre recherche ?\n"
+                "Tapez <b>oui</b> pour continuer ou <b>non</b> pour recevoir le fichier.",
+                parse_mode='HTML'
+            )
+            return
+
+        # ── Étape 3 : continuer ou terminer ─────────────────────────────────
+        if step == 'wait_again':
+            answer = text.lower()
+
+            if answer in ('oui', 'yes', 'o', 'y', '1'):
+                channel_name = state.get('channel_name', state.get('channel_id', '?'))
+                state['step'] = 'wait_date'
+                _ds_save(uid, state)
+                await update.message.reply_text(
+                    f"📅 <b>Nouvelle recherche</b>\n"
+                    f"📡 Canal conservé : <b>{html.escape(channel_name)}</b>\n\n"
+                    "Quelle date voulez-vous analyser ?\n"
+                    "<code>10/03/2026</code>  ou  <code>2026-03-10</code>",
+                    parse_mode='HTML'
+                )
+                return
+
+            if answer in ('non', 'no', 'n', '0', 'fin', 'terminer'):
+                all_results = state.get('results', [])
+                _ds_clear(uid)
+
+                if not all_results:
+                    await update.message.reply_text("ℹ️ Aucun résultat à exporter.")
+                    return
+
+                # Génération du fichier texte
+                import io as _io
+                lines = [f"{num}:{cos}" for num, cos in all_results]
+                content = '\n'.join(lines)
+                buf = _io.BytesIO(content.encode('utf-8'))
+                buf.name = 'resultats_recherche.txt'
+                buf.seek(0)
+
+                caption = (
+                    f"📄 <b>Résultats de la recherche</b>\n"
+                    f"🔢 {len(all_results)} résultat(s) au total\n"
+                    f"Format : <code>numero:costume</code>"
+                )
+                await update.message.reply_document(
+                    document=buf,
+                    filename='resultats_recherche.txt',
+                    caption=caption,
+                    parse_mode='HTML'
+                )
+                return
+
+            # Réponse non reconnue
+            await update.message.reply_text(
+                "❓ Tapez <b>oui</b> pour continuer ou <b>non</b> pour recevoir le fichier.",
+                parse_mode='HTML'
+            )
+
+    # ── Fin recherche publique ────────────────────────────────────────────────
+
     async def clear(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await self._perm(update, 'clear'):
             return
@@ -3120,6 +3656,7 @@ def setup_bot():
     )
 
     app.add_handler(CommandHandler("start", handlers.start))
+    app.add_handler(CommandHandler("recherche", handlers.recherche))
     app.add_handler(CommandHandler("menu", handlers.menu))
     app.add_handler(CallbackQueryHandler(handlers.handle_menu_callback, pattern=r"^menu:"))
     app.add_handler(CommandHandler("connect", handlers.connect))

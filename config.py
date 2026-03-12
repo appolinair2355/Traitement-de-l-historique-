@@ -4,7 +4,7 @@ import os
 # CONFIGURATION PRÉ-DÉFINIE
 # =====================================================
 
-BOT_TOKEN = "8359623168:AAHno00lno02QOw5OvGukP0TIgn4sDFB158"
+BOT_TOKEN = "7830176220:AAGPSbyhxLazb1G6IVCzen5oUbGPDwx7wY0"
 ADMIN_ID = 1190237801
 API_ID = 29177661
 API_HASH = "a8639172fa8d35dbfd8ea46286d349ab"

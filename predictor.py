@@ -17,8 +17,14 @@ Timing :
 from game_analyzer import build_category_stats
 
 
-def _ecart_stats(positions: list, last_known: int) -> dict:
-    """Statistiques d'écart pour une liste de positions de jeu."""
+def _ecart_stats(positions: list, last_known: int, first_game: int = None) -> dict:
+    """
+    Statistiques d'écart pour une liste de positions de jeu.
+
+    first_game : numéro du premier jeu du dataset.
+                 Si fourni, le gap initial (first_game → 1ère occurrence)
+                 est inclus dans le calcul de avg_ecart et max_ecart.
+    """
     if not positions:
         return {
             'count': 0, 'last_pos': 0, 'avg_ecart': 0.0,
@@ -28,14 +34,24 @@ def _ecart_stats(positions: list, last_known: int) -> dict:
     count = len(sp)
     if count >= 2:
         ecarts = [sp[i + 1] - sp[i] for i in range(count - 1)]
+        # Inclure le gap initial si first_game est fourni
+        if first_game is not None:
+            init_gap = sp[0] - first_game
+            if init_gap > 0:
+                ecarts = [init_gap] + ecarts
         avg_ecart = sum(ecarts) / len(ecarts)
         max_ecart = max(ecarts)
     else:
         ecarts = []
         last_pos_single = sp[0]
         current_ecart_single = last_known - last_pos_single
-        avg_ecart = float(last_pos_single) if last_pos_single > 0 else float(last_known)
-        max_ecart = max(current_ecart_single, 1)
+        # Si first_game fourni, l'écart initial compte aussi
+        if first_game is not None:
+            init_gap = sp[0] - first_game
+            avg_ecart = float(init_gap) if init_gap > 0 else float(last_pos_single)
+        else:
+            avg_ecart = float(last_pos_single) if last_pos_single > 0 else float(last_known)
+        max_ecart = max(current_ecart_single, avg_ecart, 1)
     last_pos = sp[-1]
     current_ecart = last_known - last_pos
     return {
@@ -155,13 +171,14 @@ def build_predict_data(games: list) -> dict:
     cats = build_category_stats(games)
     total = len(games)
     all_nums = [int(g['numero']) for g in games]
+    first_game = min(all_nums)
     last_known = max(all_nums)
 
     result = {}
     for name, nums in _all_categories(cats).items():
         count = len(nums)
         freq = count / total
-        stats = _ecart_stats(nums, last_known)
+        stats = _ecart_stats(nums, last_known, first_game=first_game)
         result[name] = {'nums': nums, 'stats': stats, 'freq': freq}
     return result
 
