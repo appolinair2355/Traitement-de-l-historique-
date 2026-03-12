@@ -3474,33 +3474,73 @@ class Handlers:
                     progress_callback=_prog,
                 )
 
-                # Regex numéro : "PRÉDICTION #324"  ou  "#N794"  ou  "#794"
-                _PRED_NUM_RE = _re.compile(
-                    r'PRÉDICTION\s+#(\d{1,4})'      # priorité 1 : PRÉDICTION #324
-                    r'|#[Nn](\d{1,4})'               # priorité 2 : #N794 / #n794
-                    r'|(?<!\d)#(\d{1,4})(?!\d)'      # priorité 3 : #324 isolé
-                )
-                # Costumes dans l'ordre canonique
-                _SUIT_ORDER = [('♠️','♠️'), ('❤️','❤️'), ('♥️','❤️'),
-                               ('♦️','♦️'), ('♣️','♣️'),
-                               ('♠','♠️'),  ('♥','❤️'), ('♦','♦️'), ('♣','♣️')]
+                # ── Extraction générique : fonctionne avec TOUT format ──────
+                #
+                # Principe :
+                #   1. Trouver tous les nombres dans le texte (avec position)
+                #   2. Trouver tous les costumes dans le texte (avec position)
+                #   3. Associer chaque nombre au costume le plus proche
+                #   4. Retenir la paire (nombre, costume) avec la plus petite distance
+                #
+                # Normalisation costume → emoji canonique
+                _SUIT_NORM = {
+                    '♠️': '♠️', '♠': '♠️',
+                    '♥️': '❤️', '♥': '❤️', '❤️': '❤️',
+                    '♦️': '♦️', '♦': '♦️',
+                    '♣️': '♣️', '♣': '♣️',
+                }
+                # Regex : tous les nombres standalone (1-6 chiffres)
+                _ALL_NUMS_RE  = _re.compile(r'(?<!\d)(\d{1,6})(?!\d)')
+                # Regex : tous les costumes (avec ou sans variante Unicode)
+                _ALL_SUITS_RE = _re.compile(r'♠️|♥️|♦️|♣️|❤️|♠|♥|♦|♣')
+
+                def _extract_num_suit(text):
+                    """
+                    Extrait la paire (numero, costume) la plus pertinente
+                    d'un texte quelconque, sans hypothèse sur le format.
+                    """
+                    # Tous les nombres avec leur position de début
+                    nums  = [(m.start(), m.group()) for m in _ALL_NUMS_RE.finditer(text)]
+                    # Tous les costumes avec leur position de début
+                    suits = [(m.start(), _SUIT_NORM.get(m.group(), m.group()))
+                             for m in _ALL_SUITS_RE.finditer(text)]
+
+                    if not nums and not suits:
+                        return None, None
+
+                    # Si aucun costume → retourner juste le 1er nombre
+                    if not suits:
+                        return nums[0][1], '—'
+
+                    # Si aucun nombre → retourner juste le 1er costume
+                    if not nums:
+                        return None, suits[0][1]
+
+                    # Trouver la paire (num, suit) avec distance minimale
+                    best_dist = float('inf')
+                    best_num  = nums[0][1]
+                    best_suit = suits[0][1]
+                    for npos, nval in nums:
+                        for spos, sval in suits:
+                            dist = abs(spos - npos)
+                            if dist < best_dist:
+                                best_dist = dist
+                                best_num  = nval
+                                best_suit = sval
+
+                    return best_num, best_suit
 
                 for i, rec in enumerate(results_raw, 1):
                     raw_txt = rec['text'] if isinstance(rec, dict) else str(rec)
 
-                    # ── Extraire le numéro ──────────────────────────────────
-                    m_num = _PRED_NUM_RE.search(raw_txt)
-                    if m_num:
-                        numero = m_num.group(1) or m_num.group(2) or m_num.group(3)
-                    else:
-                        numero = str(i)
+                    numero, costume = _extract_num_suit(raw_txt)
 
-                    # ── Extraire les costumes (déduplication ordonnée) ──────
-                    seen_suits = []
-                    for raw_s, emoji_s in _SUIT_ORDER:
-                        if raw_s in raw_txt and emoji_s not in seen_suits:
-                            seen_suits.append(emoji_s)
-                    costume = ''.join(seen_suits) if seen_suits else '—'
+                    # Fallback numéro : index dans les résultats
+                    if numero is None:
+                        numero = str(i)
+                    # Fallback costume
+                    if costume is None:
+                        costume = '—'
 
                     found.append([numero, costume])
 
@@ -3558,7 +3598,7 @@ class Handlers:
 
             # Envoyer les 20 premiers en aperçu
             preview = found[:20]
-            lines = [f"<code>#{html.escape(str(num))}</code> : {html.escape(str(cos))}" for num, cos in preview]
+            lines = [f"<code>{html.escape(str(num))}:{html.escape(str(cos))}</code>" for num, cos in preview]
             preview_text = (
                 f"🎯 <b>{total_found} résultat(s)</b> pour "
                 f"<b>{html.escape(kw)}</b> le <b>{date_display}</b>\n"
